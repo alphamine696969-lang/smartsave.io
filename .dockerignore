@@ -1,0 +1,24 @@
+# Backend Docker — exclude frontend and dev files
+
+# Frontend (deployed on Vercel)
+src/
+public/
+index.html
+vercel.json
+dist/
+
+# Windows binaries (Linux installs via apt/pip)
+bin/
+*.exe
+
+# Dev files
+node_modules/
+.git/
+.gitignore
+.DS_Store
+*.log
+*.md
+Dockerfile
+.dockerignore
+.env
+.env.*
