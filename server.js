@@ -20,77 +20,27 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // ══════════════════════════════════════════════════════
-// Binary Paths — Cross-platform (Windows + Linux)
+// Binary Paths — Linux-only (Render Docker)
 // ══════════════════════════════════════════════════════
-
-const IS_WINDOWS = os.platform() === 'win32';
-const HOME_DIR = os.homedir();
 
 function findBinary(name, candidates) {
     for (const p of candidates) {
         if (fs.existsSync(p)) return p;
     }
-    // Fallback: look in PATH via 'where' (Windows) or 'which' (Linux/Mac)
-    const lookupCmd = IS_WINDOWS ? 'where' : 'which';
+    // Fallback: look in PATH via 'which'
     try {
-        const result = execFileSync(lookupCmd, [name], { encoding: 'utf8' }).trim();
-        // 'where' on Windows may return multiple lines; take the first
-        return result.split('\n')[0].trim();
+        return execFileSync('which', [name], { encoding: 'utf8' }).trim();
     } catch { /* not found */ }
     return candidates[0];
 }
 
-// Dynamically find ffmpeg inside winget packages (deeply nested versioned path)
-function findWingetFfmpeg() {
-    if (!IS_WINDOWS) return [];
-    try {
-        const pkgDir = path.join(HOME_DIR, 'AppData', 'Local', 'Microsoft', 'WinGet', 'Packages');
-        if (!fs.existsSync(pkgDir)) return [];
-        const ffmpegPkgs = fs.readdirSync(pkgDir).filter(d => d.startsWith('yt-dlp.FFmpeg'));
-        for (const pkg of ffmpegPkgs) {
-            const pkgPath = path.join(pkgDir, pkg);
-            // Walk into subdirectories to find ffmpeg.exe in a bin/ folder
-            const findInDir = (dir) => {
-                try {
-                    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-                        const full = path.join(dir, entry.name);
-                        if (entry.isFile() && entry.name === 'ffmpeg.exe') return full;
-                        if (entry.isDirectory()) {
-                            const found = findInDir(full);
-                            if (found) return found;
-                        }
-                    }
-                } catch { /* permission errors, etc. */ }
-                return null;
-            };
-            const found = findInDir(pkgPath);
-            if (found) return [found];
-        }
-    } catch { /* ignore */ }
-    return [];
-}
-
-// Windows winget install paths
-const winYtDlpCandidates = [
-    path.join(HOME_DIR, 'AppData', 'Local', 'Microsoft', 'WinGet', 'Links', 'yt-dlp.exe'),
-    path.join(HOME_DIR, 'AppData', 'Local', 'Microsoft', 'WinGet', 'Packages', 'yt-dlp.yt-dlp_Microsoft.Winget.Source_8wekyb3d8bbwe', 'yt-dlp.exe'),
-    'C:\\yt-dlp\\yt-dlp.exe',
-];
-
-const winFfmpegCandidates = [
-    path.join(HOME_DIR, 'AppData', 'Local', 'Microsoft', 'WinGet', 'Links', 'ffmpeg.exe'),
-    // winget installs ffmpeg for yt-dlp in a deeply nested package path
-    ...findWingetFfmpeg(),
-    'C:\\ffmpeg\\bin\\ffmpeg.exe',
-];
-
-const YT_DLP_PATH = findBinary(IS_WINDOWS ? 'yt-dlp.exe' : 'yt-dlp', IS_WINDOWS ? winYtDlpCandidates : [
+const YT_DLP_PATH = findBinary('yt-dlp', [
     '/usr/local/bin/yt-dlp',
     '/usr/bin/yt-dlp',
     '/app/yt-dlp'
 ]);
 
-const FFMPEG_PATH = findBinary(IS_WINDOWS ? 'ffmpeg.exe' : 'ffmpeg', IS_WINDOWS ? winFfmpegCandidates : [
+const FFMPEG_PATH = findBinary('ffmpeg', [
     '/usr/bin/ffmpeg',
     '/usr/local/bin/ffmpeg'
 ]);
@@ -257,7 +207,6 @@ app.post('/api/info', rateLimit, async (req, res) => {
             '--no-download',
             '--no-warnings',
             '--no-playlist',
-            '--extractor-args', 'youtube:player_client=mediaconnect',
             ...getCookieArgs(),
             '--ffmpeg-location', FFMPEG_DIR,
             url
@@ -407,7 +356,6 @@ app.get('/api/prepare-download', rateLimit, (req, res) => {
         '--no-warnings',
         '--no-playlist',
         '--merge-output-format', 'mp4',
-        '--extractor-args', 'youtube:player_client=mediaconnect',
         ...getCookieArgs(),
         '--ffmpeg-location', FFMPEG_DIR,
         '-o', path.join(tmpDir, '%(title)s.%(ext)s'),
@@ -522,7 +470,6 @@ app.get('/api/test', async (req, res) => {
     try {
         const { stdout, stderr } = await execFileAsync(YT_DLP_PATH, [
             '--dump-json', '--no-download', '--no-warnings', '--no-playlist',
-            '--extractor-args', 'youtube:player_client=mediaconnect',
             ...getCookieArgs(),
             '--ffmpeg-location', FFMPEG_DIR,
             testUrl
