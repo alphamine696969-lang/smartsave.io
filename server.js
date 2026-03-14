@@ -358,11 +358,26 @@ app.get('/api/prepare-download', rateLimit, (req, res) => {
     res.json({ success: true, jobId });
     console.log(`[Job ${jobId}] Starting: format=${format_id || 'best'}`);
 
+    // Detect if this is a YouTube URL for special handling
+    const isYouTube = url.toLowerCase().includes('youtube') || url.toLowerCase().includes('youtu.be');
+
     const args = [
         '-f', format_id || 'best',
         '--no-warnings',
         '--no-playlist',
         '--merge-output-format', 'mp4',
+        // YouTube bot-bypass: mimic a real browser
+        '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        // Retry logic for mid-download failures (fixes the 70% issue)
+        '--extractor-retries', '5',
+        '--file-access-retries', '5',
+        '--fragment-retries', '10',
+        '--retry-sleep', 'extractor:5',
+        '--retry-sleep', 'http:5',
+        // Avoid rate-limiting
+        '--sleep-requests', '1',
+        // YouTube-specific: use web client which works better from datacenter IPs
+        ...(isYouTube ? ['--extractor-args', 'youtube:player_client=web'] : []),
         ...getCookieArgs(),
         '--ffmpeg-location', FFMPEG_DIR,
         '-o', path.join(tmpDir, '%(title)s.%(ext)s'),
