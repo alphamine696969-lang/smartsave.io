@@ -195,6 +195,54 @@ function checkYtDlp() {
 }
 
 // ═════════════════════════════════════════════════════════
+// YouTube Multi-Client Retry Helper
+// ═════════════════════════════════════════════════════════
+
+const YOUTUBE_CLIENTS = ['web', 'ios', 'android', 'mweb', 'tv_embedded'];
+const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
+function isYouTubeUrl(url) {
+    const l = url.toLowerCase();
+    return l.includes('youtube') || l.includes('youtu.be');
+}
+
+// Try yt-dlp with multiple YouTube player clients until one works
+async function ytDlpWithRetry(args, url, timeout = 120000) {
+    if (!isYouTubeUrl(url)) {
+        // Non-YouTube: run directly, no retry
+        return execFileAsync(YT_DLP_PATH, args, { timeout, maxBuffer: 10 * 1024 * 1024 });
+    }
+
+    // YouTube: try each player client
+    let lastError = null;
+    for (const client of YOUTUBE_CLIENTS) {
+        try {
+            const ytArgs = [
+                ...args,
+                '--extractor-args', `youtube:player_client=${client}`,
+                '--user-agent', BROWSER_UA,
+                '--geo-bypass',
+                '--extractor-retries', '3',
+            ];
+            console.log(`  ▶ YouTube: trying client=${client}...`);
+            const result = await execFileAsync(YT_DLP_PATH, ytArgs, { timeout, maxBuffer: 10 * 1024 * 1024 });
+            console.log(`  ✅ YouTube: client=${client} worked!`);
+            return result;
+        } catch (err) {
+            const stderr = err.stderr || '';
+            console.log(`  ❌ YouTube: client=${client} failed: ${stderr.trim().split('\n').pop()}`);
+            lastError = err;
+            // If it's not a sign-in/bot issue, don't bother trying other clients
+            if (!stderr.includes('Sign in') && !stderr.includes('bot') && !stderr.includes('confirm')) {
+                throw err;
+            }
+        }
+    }
+    // All clients failed
+    throw lastError;
+}
+
+// ═════════════════════════════════════════════════════════
 // API: Get Media Info
 // ═════════════════════════════════════════════════════════
 
@@ -209,7 +257,7 @@ app.post('/api/info', rateLimit, async (req, res) => {
     }
 
     try {
-        const { stdout } = await execFileAsync(YT_DLP_PATH, [
+        const baseArgs = [
             '--dump-json',
             '--no-download',
             '--no-warnings',
@@ -217,7 +265,9 @@ app.post('/api/info', rateLimit, async (req, res) => {
             ...getCookieArgs(),
             '--ffmpeg-location', FFMPEG_DIR,
             url
-        ], { timeout: 120000, maxBuffer: 10 * 1024 * 1024 });
+        ];
+
+        const { stdout } = await ytDlpWithRetry(baseArgs, url);
 
         const info = JSON.parse(stdout);
 
@@ -317,8 +367,8 @@ app.post('/api/info', rateLimit, async (req, res) => {
         if (stderrMsg.includes('Unsupported URL') || (err.stderr && err.stderr.includes('Unsupported URL'))) {
             return res.status(400).json({ error: 'This URL is not supported.' });
         }
-        if (stderrMsg.includes('Sign in') || stderrMsg.includes('login') || stderrMsg.includes('private')) {
-            return res.status(403).json({ error: 'This content requires sign-in or is private.' });
+        if (stderrMsg.includes('Sign in') || stderrMsg.includes('login') || stderrMsg.includes('private') || stderrMsg.includes('bot')) {
+            return res.status(403).json({ error: 'YouTube is blocking this request from our server. Please try again in a moment.' });
         }
         if (stderrMsg.includes('HTTP Error 429') || stderrMsg.includes('Too Many Requests')) {
             return res.status(429).json({ error: 'Too many requests to the platform. Please wait a moment and try again.' });
@@ -358,66 +408,81 @@ app.get('/api/prepare-download', rateLimit, (req, res) => {
     res.json({ success: true, jobId });
     console.log(`[Job ${jobId}] Starting: format=${format_id || 'best'}`);
 
-    // Detect if this is a YouTube URL for special handling
-    const isYouTube = url.toLowerCase().includes('youtube') || url.toLowerCase().includes('youtu.be');
-
-    const args = [
+    // Build base args (without YouTube-specific client)
+    const baseArgs = [
         '-f', format_id || 'best',
         '--no-warnings',
         '--no-playlist',
         '--merge-output-format', 'mp4',
-        // YouTube bot-bypass: mimic a real browser
-        '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        // Retry logic for mid-download failures (fixes the 70% issue)
-        '--extractor-retries', '5',
+        '--user-agent', BROWSER_UA,
+        '--geo-bypass',
+        '--extractor-retries', '3',
         '--file-access-retries', '5',
         '--fragment-retries', '10',
-        '--retry-sleep', 'extractor:5',
-        '--retry-sleep', 'http:5',
-        // Avoid rate-limiting
-        '--sleep-requests', '1',
-        // YouTube-specific: use web client which works better from datacenter IPs
-        ...(isYouTube ? ['--extractor-args', 'youtube:player_client=web'] : []),
         ...getCookieArgs(),
         '--ffmpeg-location', FFMPEG_DIR,
         '-o', path.join(tmpDir, '%(title)s.%(ext)s'),
         url
     ];
 
-    const ytdlp = spawn(YT_DLP_PATH, args);
-    let stderrData = '';
+    // For YouTube: try each client sequentially
+    const clients = isYouTubeUrl(url) ? [...YOUTUBE_CLIENTS] : [null];
 
-    ytdlp.stderr.on('data', (d) => { stderrData += d.toString(); });
+    function tryDownload(clientIndex) {
+        const client = clients[clientIndex];
+        const args = client
+            ? [...baseArgs.slice(0, -1), '--extractor-args', `youtube:player_client=${client}`, url]
+            : baseArgs;
 
-    ytdlp.on('close', (code) => {
-        const job = downloadJobs.get(jobId);
-        if (!job) return;
+        if (client) console.log(`[Job ${jobId}] Trying YouTube client=${client}...`);
 
-        if (code === 0) {
-            const files = fs.readdirSync(tmpDir);
-            if (files.length > 0) {
-                job.status = 'ready';
-                job.file = path.join(tmpDir, files[0]);
-                console.log(`[Job ${jobId}] Done: ${files[0]}`);
+        const ytdlp = spawn(YT_DLP_PATH, args);
+        let stderrData = '';
+
+        ytdlp.stderr.on('data', (d) => { stderrData += d.toString(); });
+
+        ytdlp.on('close', (code) => {
+            const job = downloadJobs.get(jobId);
+            if (!job) return;
+
+            if (code === 0) {
+                const files = fs.readdirSync(tmpDir);
+                if (files.length > 0) {
+                    job.status = 'ready';
+                    job.file = path.join(tmpDir, files[0]);
+                    console.log(`[Job ${jobId}] Done: ${files[0]}${client ? ` (client=${client})` : ''}`);
+                } else {
+                    job.status = 'error';
+                    job.error = 'No output file.';
+                }
             } else {
-                job.status = 'error';
-                job.error = 'No output file.';
-            }
-        } else {
-            console.error(`[Job ${jobId}] Error: ${stderrData}`);
-            job.status = 'error';
-            job.error = 'Download failed.';
-            try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { }
-        }
-    });
+                // If YouTube sign-in error and more clients to try, retry
+                const isSignInError = stderrData.includes('Sign in') || stderrData.includes('bot') || stderrData.includes('confirm');
+                if (isSignInError && clientIndex + 1 < clients.length) {
+                    console.log(`[Job ${jobId}] client=${client} blocked, trying next...`);
+                    // Clean partial files before retry
+                    try { const files = fs.readdirSync(tmpDir); files.forEach(f => fs.unlinkSync(path.join(tmpDir, f))); } catch { }
+                    tryDownload(clientIndex + 1);
+                    return;
+                }
 
-    ytdlp.on('error', (err) => {
-        const job = downloadJobs.get(jobId);
-        if (job) {
-            job.status = 'error';
-            job.error = err.message;
-        }
-    });
+                console.error(`[Job ${jobId}] Error: ${stderrData.trim().split('\n').pop()}`);
+                job.status = 'error';
+                job.error = isSignInError ? 'YouTube is blocking downloads from this server.' : 'Download failed.';
+                try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { }
+            }
+        });
+
+        ytdlp.on('error', (err) => {
+            const job = downloadJobs.get(jobId);
+            if (job) {
+                job.status = 'error';
+                job.error = err.message;
+            }
+        });
+    }
+
+    tryDownload(0);
 });
 
 // ═════════════════════════════════════════════════════════
