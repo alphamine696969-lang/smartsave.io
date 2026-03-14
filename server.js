@@ -257,17 +257,17 @@ app.post('/api/info', rateLimit, async (req, res) => {
     }
 
     try {
-        const baseArgs = [
+        const { stdout } = await execFileAsync(YT_DLP_PATH, [
             '--dump-json',
             '--no-download',
             '--no-warnings',
             '--no-playlist',
+            '--user-agent', BROWSER_UA,
+            '--geo-bypass',
             ...getCookieArgs(),
             '--ffmpeg-location', FFMPEG_DIR,
             url
-        ];
-
-        const { stdout } = await ytDlpWithRetry(baseArgs, url);
+        ], { timeout: 120000, maxBuffer: 10 * 1024 * 1024 });
 
         const info = JSON.parse(stdout);
 
