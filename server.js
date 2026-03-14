@@ -40,12 +40,14 @@ function findBinary(name, candidates) {
 }
 
 const YT_DLP_PATH = findBinary('yt-dlp', [
+    path.join(__dirname, 'yt-dlp'),
     '/usr/local/bin/yt-dlp',
     '/usr/bin/yt-dlp',
     '/app/yt-dlp'
 ]);
 
 const FFMPEG_PATH = findBinary('ffmpeg', [
+    path.join(__dirname, 'ffmpeg-bin', 'ffmpeg'),
     '/usr/bin/ffmpeg',
     '/usr/local/bin/ffmpeg'
 ]);
