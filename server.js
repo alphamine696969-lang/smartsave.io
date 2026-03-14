@@ -408,34 +408,25 @@ app.get('/api/prepare-download', rateLimit, (req, res) => {
     res.json({ success: true, jobId });
     console.log(`[Job ${jobId}] Starting: format=${format_id || 'best'}`);
 
-    // Build base args (without YouTube-specific client)
-    const baseArgs = [
-        '-f', format_id || 'best',
-        '--no-warnings',
-        '--no-playlist',
-        '--merge-output-format', 'mp4',
-        '--user-agent', BROWSER_UA,
-        '--geo-bypass',
-        '--extractor-retries', '3',
-        '--file-access-retries', '5',
-        '--fragment-retries', '10',
-        ...getCookieArgs(),
-        '--ffmpeg-location', FFMPEG_DIR,
-        '-o', path.join(tmpDir, '%(title)s.%(ext)s'),
-        url
-    ];
+    // Run download — with format fallback if specific format unavailable
+    function runDownload(formatStr, isRetry = false) {
+        const args = [
+            '-f', formatStr,
+            '--no-warnings',
+            '--no-playlist',
+            '--merge-output-format', 'mp4',
+            '--user-agent', BROWSER_UA,
+            '--geo-bypass',
+            '--extractor-retries', '3',
+            '--file-access-retries', '5',
+            '--fragment-retries', '10',
+            ...getCookieArgs(),
+            '--ffmpeg-location', FFMPEG_DIR,
+            '-o', path.join(tmpDir, '%(title)s.%(ext)s'),
+            url
+        ];
 
-    // For YouTube: try each client sequentially
-    const clients = isYouTubeUrl(url) ? [...YOUTUBE_CLIENTS] : [null];
-
-    function tryDownload(clientIndex) {
-        const client = clients[clientIndex];
-        const args = client
-            ? [...baseArgs.slice(0, -1), '--extractor-args', `youtube:player_client=${client}`, url]
-            : baseArgs;
-
-        if (client) console.log(`[Job ${jobId}] Trying YouTube client=${client}...`);
-
+        console.log(`[Job ${jobId}] Downloading with format=${formatStr}${isRetry ? ' (fallback)' : ''}...`);
         const ytdlp = spawn(YT_DLP_PATH, args);
         let stderrData = '';
 
@@ -450,25 +441,30 @@ app.get('/api/prepare-download', rateLimit, (req, res) => {
                 if (files.length > 0) {
                     job.status = 'ready';
                     job.file = path.join(tmpDir, files[0]);
-                    console.log(`[Job ${jobId}] Done: ${files[0]}${client ? ` (client=${client})` : ''}`);
+                    console.log(`[Job ${jobId}] Done: ${files[0]}`);
                 } else {
                     job.status = 'error';
                     job.error = 'No output file.';
                 }
             } else {
-                // If YouTube sign-in error and more clients to try, retry
-                const isSignInError = stderrData.includes('Sign in') || stderrData.includes('bot') || stderrData.includes('confirm');
-                if (isSignInError && clientIndex + 1 < clients.length) {
-                    console.log(`[Job ${jobId}] client=${client} blocked, trying next...`);
-                    // Clean partial files before retry
+                const isFormatError = stderrData.includes('Requested format is not available') || stderrData.includes('format is not available');
+                const isSignInError = stderrData.includes('Sign in') || stderrData.includes('bot');
+
+                // If format error and haven't retried with 'best' yet, try fallback
+                if (isFormatError && !isRetry) {
+                    console.log(`[Job ${jobId}] Format "${formatStr}" unavailable, falling back to best...`);
                     try { const files = fs.readdirSync(tmpDir); files.forEach(f => fs.unlinkSync(path.join(tmpDir, f))); } catch { }
-                    tryDownload(clientIndex + 1);
+                    runDownload('bestvideo+bestaudio/best', true);
                     return;
                 }
 
                 console.error(`[Job ${jobId}] Error: ${stderrData.trim().split('\n').pop()}`);
                 job.status = 'error';
-                job.error = isSignInError ? 'YouTube is blocking downloads from this server.' : 'Download failed.';
+                job.error = isSignInError
+                    ? 'YouTube is blocking downloads from this server.'
+                    : isFormatError
+                    ? 'Requested format unavailable. Please try a different quality.'
+                    : 'Download failed.';
                 try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { }
             }
         });
@@ -482,7 +478,7 @@ app.get('/api/prepare-download', rateLimit, (req, res) => {
         });
     }
 
-    tryDownload(0);
+    runDownload(format_id || 'bestvideo+bestaudio/best');
 });
 
 // ═════════════════════════════════════════════════════════
