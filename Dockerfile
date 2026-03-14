@@ -33,9 +33,8 @@ RUN npm ci --omit=dev
 # Copy backend server
 COPY server.js .
 
-# Copy YouTube cookies (for authentication bypass)
-# This file is REQUIRED for YouTube to work from data center IPs
-COPY cookies.txt ./cookies.txt
+# Create empty cookies placeholder (actual cookies loaded from YOUTUBE_COOKIES env var at runtime)
+RUN touch ./cookies.txt
 
 # Render sets PORT dynamically
 ENV PORT=3001
