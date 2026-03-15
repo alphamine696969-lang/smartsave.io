@@ -415,7 +415,7 @@ app.get('/api/prepare-download', rateLimit, (req, res) => {
         if (isYouTubeUrl(url)) {
             // YouTube specific arguments (universal format, performance flags)
             args = [
-                '-f', 'bv*+ba/b/best',
+                '-f', 'bv*+ba/b',
                 '--merge-output-format', 'mp4',
                 '--no-playlist',
                 '--geo-bypass',
