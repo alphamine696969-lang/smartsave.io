@@ -410,23 +410,44 @@ app.get('/api/prepare-download', rateLimit, (req, res) => {
 
     // Run download — with format fallback if specific format unavailable
     function runDownload(formatStr, isRetry = false) {
-        const args = [
-            '-f', formatStr,
-            '--no-warnings',
-            '--no-playlist',
-            '--merge-output-format', 'mp4',
-            '--user-agent', BROWSER_UA,
-            '--geo-bypass',
-            '--extractor-retries', '3',
-            '--file-access-retries', '5',
-            '--fragment-retries', '10',
-            ...getCookieArgs(),
-            '--ffmpeg-location', FFMPEG_DIR,
-            '-o', path.join(tmpDir, '%(title)s.%(ext)s'),
-            url
-        ];
+        let args;
+        
+        if (isYouTubeUrl(url)) {
+            // YouTube specific arguments (universal format, performance flags)
+            args = [
+                '-f', 'bv*+ba/b/best',
+                '--merge-output-format', 'mp4',
+                '--no-playlist',
+                '--geo-bypass',
+                '--no-warnings',
+                '--concurrent-fragments', '5',
+                '--retries', '3',
+                ...getCookieArgs(),
+                '--ffmpeg-location', FFMPEG_DIR,
+                '-o', path.join(tmpDir, '%(title)s.%(ext)s'),
+                url
+            ];
+            console.log(`[Job ${jobId}] Downloading YouTube video with universal format...`);
+        } else {
+            // Logic for other platforms
+            args = [
+                '-f', formatStr,
+                '--no-warnings',
+                '--no-playlist',
+                '--merge-output-format', 'mp4',
+                '--user-agent', BROWSER_UA,
+                '--geo-bypass',
+                '--extractor-retries', '3',
+                '--file-access-retries', '5',
+                '--fragment-retries', '10',
+                ...getCookieArgs(),
+                '--ffmpeg-location', FFMPEG_DIR,
+                '-o', path.join(tmpDir, '%(title)s.%(ext)s'),
+                url
+            ];
+            console.log(`[Job ${jobId}] Downloading with format=${formatStr}${isRetry ? ' (fallback)' : ''}...`);
+        }
 
-        console.log(`[Job ${jobId}] Downloading with format=${formatStr}${isRetry ? ' (fallback)' : ''}...`);
         const ytdlp = spawn(YT_DLP_PATH, args);
         let stderrData = '';
 
