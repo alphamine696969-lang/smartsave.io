@@ -12,17 +12,34 @@ import { renderAbout } from './pages/about.js';
 import { renderContact } from './pages/contact.js';
 import { renderPrivacy } from './pages/privacy.js';
 
+// ── Platform-specific downloader pages ──
+import { renderYouTubeDownloader }   from './pages/youtube-downloader.js';
+import { renderInstagramDownloader } from './pages/instagram-downloader.js';
+import { renderTwitterDownloader }   from './pages/twitter-downloader.js';
+import { renderPinterestDownloader } from './pages/pinterest-downloader.js';
+import { renderTikTokDownloader }    from './pages/tiktok-downloader.js';
+import { renderFacebookDownloader }  from './pages/facebook-downloader.js';
+
 // ── Initialize Global Components ──
 renderNavbar();
 renderFooter();
 
 // ── Route Definitions ──
 const routes = {
-  '/': () => renderHome(),
+  // Generic pages
+  '/':        () => renderHome(),
   '/download': () => renderDownload(),
-  '/about': () => renderAbout(),
+  '/about':   () => renderAbout(),
   '/contact': () => renderContact(),
   '/privacy': () => renderPrivacy(),
+
+  // Platform-specific downloader pages (own SEO + theme)
+  '/download/youtube':   () => renderYouTubeDownloader(),
+  '/download/instagram': () => renderInstagramDownloader(),
+  '/download/twitter':   () => renderTwitterDownloader(),
+  '/download/pinterest': () => renderPinterestDownloader(),
+  '/download/tiktok':    () => renderTikTokDownloader(),
+  '/download/facebook':  () => renderFacebookDownloader(),
 };
 
 // ── Start Router ──
