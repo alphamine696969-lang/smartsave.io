@@ -14,7 +14,7 @@ export function renderTikTokDownloader() {
     ogTitle: 'TikTok Downloader — Download TikTok Videos No Watermark Free',
     ogDescription: desc,
     canonicalPath: '/download/tiktok',
-    jsonLd: buildPlatformJsonLd({ platformName: 'TikTok', description: desc }),
+    jsonLd: buildPlatformJsonLd({ platformName: 'TikTok', description: desc, canonicalPath: '/download/tiktok' }),
   });
 
   const url = sessionStorage.getItem('downloadUrl') || '';

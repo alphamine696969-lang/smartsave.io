@@ -14,7 +14,7 @@ export function renderPinterestDownloader() {
     ogTitle: 'Pinterest Downloader — Save Pinterest Videos & Photos Free',
     ogDescription: desc,
     canonicalPath: '/download/pinterest',
-    jsonLd: buildPlatformJsonLd({ platformName: 'Pinterest', description: desc }),
+    jsonLd: buildPlatformJsonLd({ platformName: 'Pinterest', description: desc, canonicalPath: '/download/pinterest' }),
   });
 
   const url = sessionStorage.getItem('downloadUrl') || '';

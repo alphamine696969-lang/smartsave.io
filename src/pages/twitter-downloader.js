@@ -14,7 +14,7 @@ export function renderTwitterDownloader() {
     ogTitle: 'Twitter / X Video Downloader — Save Tweet Videos & GIFs Free',
     ogDescription: desc,
     canonicalPath: '/download/twitter',
-    jsonLd: buildPlatformJsonLd({ platformName: 'Twitter / X', description: desc }),
+    jsonLd: buildPlatformJsonLd({ platformName: 'Twitter / X', description: desc, canonicalPath: '/download/twitter' }),
   });
 
   const url = sessionStorage.getItem('downloadUrl') || '';

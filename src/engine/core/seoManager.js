@@ -38,15 +38,24 @@ export function updateSEO({
   setMeta('property', 'twitter:title', ogTitle || title);
   setMeta('property', 'twitter:description', ogDescription || description);
 
-  // ── Canonical URL ──
+  // ── Canonical URL + og:url + twitter:url ──
   if (canonicalPath) {
+    const fullUrl = `https://smartsave.io${canonicalPath}`;
+
+    // Canonical link tag
     let link = document.querySelector('link[rel="canonical"]');
     if (!link) {
       link = document.createElement('link');
       link.rel = 'canonical';
       document.head.appendChild(link);
     }
-    link.href = `https://smartsave.io${canonicalPath}`;
+    link.href = fullUrl;
+
+    // og:url — tells social crawlers the true page URL
+    setMeta('property', 'og:url', fullUrl);
+
+    // twitter:url
+    setMeta('property', 'twitter:url', fullUrl);
   }
 
   // ── JSON-LD Structured Data ──
@@ -77,15 +86,15 @@ function setMeta(attr, value, content) {
 /**
  * Build a WebApplication JSON-LD object for a platform page.
  *
- * @param {{ platformName: string, description: string }} opts
+ * @param {{ platformName: string, description: string, canonicalPath?: string }} opts
  * @returns {object}
  */
-export function buildPlatformJsonLd({ platformName, description }) {
+export function buildPlatformJsonLd({ platformName, description, canonicalPath }) {
   return {
     '@context': 'https://schema.org',
     '@type': 'WebApplication',
     name: `SmartSave.io ${platformName} Downloader`,
-    url: 'https://smartsave.io',
+    url: canonicalPath ? `https://smartsave.io${canonicalPath}` : 'https://smartsave.io',
     description,
     applicationCategory: 'MultimediaApplication',
     operatingSystem: 'All',

@@ -4,6 +4,17 @@
 // ═══════════════════════════════════════════════════════════
 
 import { navigateTo } from '../router.js';
+import { parseUrl } from '../engine/core/urlParser.js';
+
+// Map platformId → dedicated route
+const PLATFORM_ROUTES = {
+  youtube:   '/download/youtube',
+  instagram: '/download/instagram',
+  twitter:   '/download/twitter',
+  pinterest: '/download/pinterest',
+  tiktok:    '/download/tiktok',
+  facebook:  '/download/facebook',
+};
 
 const PLATFORMS = [
   {
@@ -76,7 +87,7 @@ const PLATFORMS = [
 
 export function renderHome() {
   setTimeout(() => {
-    // Hero form submit — smart routing
+    // Hero form submit — smart platform routing
     const form = document.getElementById('hero-form');
     if (form) {
       form.addEventListener('submit', (e) => {
@@ -89,8 +100,13 @@ export function renderHome() {
           setTimeout(() => input?.classList.remove('hero__input--error'), 1200);
           return;
         }
+
+        // Detect platform and route to the correct dedicated page
+        const { platformId } = parseUrl(url);
+        const route = platformId ? (PLATFORM_ROUTES[platformId] || '/download') : '/download';
+
         sessionStorage.setItem('downloadUrl', url);
-        navigateTo('/download');
+        navigateTo(route);
       });
     }
 

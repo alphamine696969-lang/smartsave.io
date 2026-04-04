@@ -16,7 +16,7 @@ export function renderYouTubeDownloader() {
     ogTitle: 'YouTube Video Downloader — HD, 4K, MP3 Free | SmartSave.io',
     ogDescription: desc,
     canonicalPath: '/download/youtube',
-    jsonLd: buildPlatformJsonLd({ platformName: 'YouTube', description: desc }),
+    jsonLd: buildPlatformJsonLd({ platformName: 'YouTube', description: desc, canonicalPath: '/download/youtube' }),
   });
 
   const url = sessionStorage.getItem('downloadUrl') || '';

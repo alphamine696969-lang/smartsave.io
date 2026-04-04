@@ -16,10 +16,7 @@ export function renderFacebookDownloader() {
     ogTitle: 'Facebook Video Downloader — Save FB Videos Free in HD',
     ogDescription: desc,
     canonicalPath: '/download/facebook',
-    jsonLd: buildPlatformJsonLd({
-      platformName: 'Facebook',
-      description: desc,
-    }),
+    jsonLd: buildPlatformJsonLd({ platformName: 'Facebook', description: desc, canonicalPath: '/download/facebook' }),
   });
 
   const url = sessionStorage.getItem('downloadUrl') || '';

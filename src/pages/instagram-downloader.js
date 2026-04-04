@@ -15,7 +15,7 @@ export function renderInstagramDownloader() {
     ogTitle: 'Instagram Downloader — Download Reels, Stories & Posts Free',
     ogDescription: desc,
     canonicalPath: '/download/instagram',
-    jsonLd: buildPlatformJsonLd({ platformName: 'Instagram', description: desc }),
+    jsonLd: buildPlatformJsonLd({ platformName: 'Instagram', description: desc, canonicalPath: '/download/instagram' }),
   });
 
   const url = sessionStorage.getItem('downloadUrl') || '';
