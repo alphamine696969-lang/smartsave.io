@@ -23,33 +23,42 @@ const PORT = process.env.PORT || 3001;
 // Binary Paths — Linux-only (Render Docker)
 // ══════════════════════════════════════════════════════
 
+const IS_WINDOWS = process.platform === 'win32';
+
 function findBinary(name, candidates) {
-    // First: try to find via 'which' (works after pip install / apt install)
+    // On Windows use 'where', on Linux/Mac use 'which'
+    const whichCmd = IS_WINDOWS ? 'where' : 'which';
     try {
-        const found = execFileSync('which', [name], { encoding: 'utf8' }).trim();
+        const found = execFileSync(whichCmd, [name], { encoding: 'utf8' }).trim().split('\n')[0].trim();
         if (found && fs.existsSync(found)) return found;
     } catch { /* not in PATH */ }
 
-    // Second: check known Linux paths
+    // Check all candidate paths
     for (const p of candidates) {
         if (fs.existsSync(p)) return p;
     }
 
-    // Last resort: just use the name (let OS resolve it)
+    // Last resort: return name as-is and let OS resolve
     return name;
 }
 
-const YT_DLP_PATH = findBinary('yt-dlp', [
-    path.join(__dirname, 'yt-dlp'),
+const YT_DLP_PATH = findBinary(IS_WINDOWS ? 'yt-dlp.exe' : 'yt-dlp', [
+    path.join(__dirname, 'yt-dlp.exe'),      // Windows: project root
+    path.join(__dirname, 'yt-dlp'),           // Linux: project root
+    path.join(__dirname, 'bin', 'yt-dlp.exe'),
+    path.join(__dirname, 'bin', 'yt-dlp'),
     '/usr/local/bin/yt-dlp',
     '/usr/bin/yt-dlp',
-    '/app/yt-dlp'
+    '/app/yt-dlp',
 ]);
 
-const FFMPEG_PATH = findBinary('ffmpeg', [
+const FFMPEG_PATH = findBinary(IS_WINDOWS ? 'ffmpeg.exe' : 'ffmpeg', [
+    path.join(__dirname, 'ffmpeg.exe'),       // Windows: project root
+    path.join(__dirname, 'ffmpeg'),
+    path.join(__dirname, 'ffmpeg-bin', 'ffmpeg.exe'),
     path.join(__dirname, 'ffmpeg-bin', 'ffmpeg'),
+    '/usr/local/bin/ffmpeg',
     '/usr/bin/ffmpeg',
-    '/usr/local/bin/ffmpeg'
 ]);
 
 const FFMPEG_DIR = path.dirname(FFMPEG_PATH);
@@ -256,132 +265,164 @@ app.post('/api/info', rateLimit, async (req, res) => {
         return res.status(500).json({ error: 'Server not configured. yt-dlp binary is missing.' });
     }
 
-    try {
-        const { stdout } = await execFileAsync(YT_DLP_PATH, [
-            '--dump-json',
-            '--no-download',
-            '--no-warnings',
-            '--no-playlist',
-            '--user-agent', BROWSER_UA,
-            '--geo-bypass',
-            ...getCookieArgs(),
-            '--ffmpeg-location', FFMPEG_DIR,
-            url
-        ], { timeout: 120000, maxBuffer: 10 * 1024 * 1024 });
+    // --dump-json fetches metadata ONLY. NEVER pass -f here — that causes "format not available" errors.
+    const baseArgs = [
+        '--dump-json',
+        '--no-playlist',
+        '--no-warnings',
+        '--no-check-certificate',
+        ...getCookieArgs(),
+    ];
 
-        const info = JSON.parse(stdout);
+    const isYT = isYouTubeUrl(url);
+    const clients = isYT ? ['ios', 'web', 'android', 'mweb', 'tv_embedded'] : [null];
 
-        const videoFormats = [];
-        const audioFormats = [];
-        const seenVideoHeights = new Set();
-        const seenAudio = new Set();
+    let info = null;
+    let lastErr = null;
 
-        if (info.formats) {
-            for (const f of info.formats) {
-                if (!f.url) continue;
-                const hasVideo = f.vcodec && f.vcodec !== 'none';
-                const hasAudio = f.acodec && f.acodec !== 'none';
-                const ext = (f.ext || 'mp4').toUpperCase();
-                const size = f.filesize || f.filesize_approx || null;
-                const note = f.format_note || '';
+    for (const client of clients) {
+        const args = [
+            ...baseArgs,
+            ...(client ? ['--extractor-args', `youtube:player_client=${client}`, '--user-agent', BROWSER_UA, '--geo-bypass'] : []),
+            url,
+        ];
 
-                if (hasVideo) {
-                    const height = f.height || 0;
-                    const key = `${height}p`;
-                    if (!seenVideoHeights.has(key) && height > 0) {
-                        seenVideoHeights.add(key);
-                        videoFormats.push({
-                            type: 'video',
-                            format_id: hasAudio ? f.format_id : `${f.format_id}+bestaudio`,
-                            ext: f.ext || 'mp4',
-                            quality: key,
-                            height,
-                            fps: f.fps || null,
-                            filesize: size,
-                            label: `${ext} — ${key}${f.fps && f.fps > 30 ? ' ' + f.fps + 'fps' : ''}`,
-                            note,
-                            hasAudio: true
-                        });
-                    }
-                } else if (hasAudio && !hasVideo) {
-                    const abr = f.abr || f.tbr || 0;
-                    const key = `audio-${Math.round(abr)}-${f.ext}`;
-                    if (!seenAudio.has(key) && abr > 0) {
-                        seenAudio.add(key);
-                        audioFormats.push({
-                            type: 'audio',
-                            format_id: f.format_id,
-                            ext: f.ext || 'mp3',
-                            quality: `${Math.round(abr)}kbps`,
-                            abr: Math.round(abr),
-                            filesize: size,
-                            label: `${ext} — ${Math.round(abr)}kbps`,
-                            note,
-                            hasAudio: true
-                        });
-                    }
-                }
-            }
+        try {
+            console.log(`[/api/info] Trying${client ? ` client=${client}` : ''}: ${url}`);
+            const { stdout } = await execFileAsync(YT_DLP_PATH, args, {
+                timeout: 90_000,
+                maxBuffer: 20 * 1024 * 1024,
+            });
+            info = JSON.parse(stdout);
+            console.log(`[/api/info] ✅ Success${client ? ` (${client})` : ''}: ${info.title}`);
+            break;
+        } catch (err) {
+            const stderr = (err.stderr || err.message || '').trim();
+            const lastLine = stderr.split('\n').pop() || '';
+            console.log(`[/api/info] ❌${client ? ` client=${client}` : ''} failed: ${lastLine}`);
+            lastErr = err;
+            lastErr._stderr = stderr;
+            // Only try more clients for bot/geo-block errors
+            const isBotBlock = stderr.includes('Sign in') || stderr.includes('login') || stderr.includes('bot') || stderr.includes('confirm') || stderr.includes('not available in your country');
+            if (!isBotBlock) break;
         }
+    }
 
-        videoFormats.sort((a, b) => b.height - a.height);
-        audioFormats.sort((a, b) => b.abr - a.abr);
-
-        // Insert "Best Quality" option at top
-        videoFormats.unshift({
-            type: 'video',
-            format_id: 'bestvideo+bestaudio/best',
-            ext: 'mp4',
-            quality: 'Best',
-            height: info.height || 9999,
-            filesize: null,
-            label: '🌟 Best Quality (auto-merged)',
-            note: 'Highest video + audio combined',
-            hasAudio: true,
-            isBest: true
-        });
-
-        res.json({
-            success: true,
-            data: {
-                title: info.title || 'Untitled',
-                thumbnail: info.thumbnail || null,
-                duration: info.duration || 0,
-                uploader: info.uploader || info.channel || 'Unknown',
-                platform: detectPlatform(url),
-                width: info.width || null,
-                height: info.height || null,
-                videoFormats,
-                audioFormats
-            }
-        });
-
-    } catch (err) {
-        const stderrMsg = err.stderr ? err.stderr.trim().split('\n').pop() : '';
-        console.error('yt-dlp error:', err.message);
-        if (stderrMsg) console.error('yt-dlp stderr:', stderrMsg);
-
-        if (err.killed || err.message.includes('timeout') || err.message.includes('ETIMEDOUT')) {
-            return res.status(408).json({ error: 'Request timed out. The server may be under heavy load — please try again.' });
+    if (!info) {
+        const stderr = (lastErr?._stderr || lastErr?.message || '').trim();
+        const lastLine = stderr.split('\n').pop() || '';
+        console.error('[/api/info] All attempts failed:', lastLine);
+        if (lastErr?.killed || stderr.includes('timeout') || stderr.includes('ETIMEDOUT')) {
+            return res.status(408).json({ error: 'Request timed out. Please try again.' });
         }
-        if (stderrMsg.includes('Unsupported URL') || (err.stderr && err.stderr.includes('Unsupported URL'))) {
-            return res.status(400).json({ error: 'This URL is not supported.' });
+        if (stderr.includes('Sign in') || stderr.includes('login') || stderr.includes('bot') || stderr.includes('confirm')) {
+            return res.status(403).json({ error: 'YouTube is temporarily blocking our server. Please try again in a few minutes.' });
         }
-        if (stderrMsg.includes('Sign in') || stderrMsg.includes('login') || stderrMsg.includes('private') || stderrMsg.includes('bot')) {
-            return res.status(403).json({ error: 'YouTube is blocking this request from our server. Please try again in a moment.' });
+        if (stderr.includes('Private video') || stderr.includes('private')) {
+            return res.status(403).json({ error: 'This video is private and cannot be downloaded.' });
         }
-        if (stderrMsg.includes('HTTP Error 429') || stderrMsg.includes('Too Many Requests')) {
-            return res.status(429).json({ error: 'Too many requests to the platform. Please wait a moment and try again.' });
+        if (stderr.includes('unavailable') || stderr.includes('removed') || stderr.includes('was not found')) {
+            return res.status(404).json({ error: 'Video not found — it may have been deleted or is unavailable.' });
         }
-        res.status(500).json({
-            error: stderrMsg || 'Could not process this URL. It may be unsupported or the content may be private.'
+        if (stderr.includes('HTTP Error 429') || stderr.includes('Too Many Requests')) {
+            return res.status(429).json({ error: 'Too many requests. Please wait a moment.' });
+        }
+        return res.status(500).json({
+            error: lastLine || 'Could not fetch video information. Please try a different URL.'
         });
     }
+
+    // ── Parse formats ──────────────────────────────────
+    const videoFormats = [];
+    const audioFormats = [];
+    const seenHeights = new Set();
+    const seenAudioKeys = new Set();
+
+    for (const f of (info.formats || [])) {
+        if (!f.format_id) continue;
+        const hasVideo = f.vcodec && f.vcodec !== 'none';
+        const hasAudio = f.acodec && f.acodec !== 'none';
+        const size = f.filesize || f.filesize_approx || null;
+
+        if (hasVideo) {
+            const height = f.height || 0;
+            if (height < 144) continue;
+            if (seenHeights.has(height)) continue;
+            seenHeights.add(height);
+            // Video-only streams: attach best audio
+            const formatId = hasAudio ? f.format_id : `${f.format_id}+bestaudio[ext=m4a]/bestaudio`;
+            const fpsLabel = f.fps && f.fps > 30 ? ` ${f.fps}fps` : '';
+            const ext = (f.ext || 'mp4').toUpperCase();
+            videoFormats.push({
+                type: 'video',
+                format_id: formatId,
+                ext: f.ext || 'mp4',
+                quality: `${height}p${fpsLabel}`,
+                height,
+                fps: f.fps || null,
+                filesize: size,
+                label: `${ext} — ${height}p${fpsLabel}`,
+                note: f.format_note || '',
+                hasAudio: true,
+            });
+        } else if (hasAudio && !hasVideo) {
+            const abr = Math.round(f.abr || f.tbr || 0);
+            if (!abr) continue;
+            const ext = f.ext || 'm4a';
+            const key = `${abr}-${ext}`;
+            if (seenAudioKeys.has(key)) continue;
+            seenAudioKeys.add(key);
+            audioFormats.push({
+                type: 'audio',
+                format_id: f.format_id,
+                ext,
+                quality: `${abr}kbps`,
+                abr,
+                filesize: size,
+                label: `${ext.toUpperCase()} — ${abr}kbps`,
+                note: f.format_note || '',
+                hasAudio: true,
+            });
+        }
+    }
+
+    videoFormats.sort((a, b) => b.height - a.height);
+    audioFormats.sort((a, b) => b.abr - a.abr);
+
+    // Always prepend a guaranteed "best" option
+    videoFormats.unshift({
+        type: 'video',
+        format_id: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best',
+        ext: 'mp4',
+        quality: 'Best',
+        height: 9999,
+        filesize: null,
+        label: '⭐ Best Quality (auto)',
+        note: 'Auto-selects highest resolution + best audio',
+        hasAudio: true,
+        isBest: true,
+    });
+
+    res.json({
+        success: true,
+        data: {
+            title: info.title || 'Untitled',
+            thumbnail: info.thumbnail || null,
+            duration: info.duration || 0,
+            uploader: info.uploader || info.channel || 'Unknown',
+            platform: detectPlatform(url),
+            width: info.width || null,
+            height: info.height || null,
+            videoFormats,
+            audioFormats,
+        }
+    });
 });
 
 // ═════════════════════════════════════════════════════════
 // API: Prepare Download (background job)
 // ═════════════════════════════════════════════════════════
+
 
 app.get('/api/prepare-download', rateLimit, (req, res) => {
     const { url, format_id } = req.query;
@@ -408,99 +449,158 @@ app.get('/api/prepare-download', rateLimit, (req, res) => {
     res.json({ success: true, jobId });
     console.log(`[Job ${jobId}] Starting: format=${format_id || 'best'}`);
 
-    // Run download — with format fallback if specific format unavailable
-    function runDownload(formatStr, isRetry = false) {
-        let args;
-        
+    // Run download with format + retry logic
+    async function runDownload(formatStr, isRetry = false) {
+        // Build base args common to all platforms
+        const baseArgs = [
+            '--no-warnings',
+            '--no-playlist',
+            '--no-check-certificate',
+            '--merge-output-format', 'mp4',
+            '--concurrent-fragments', '4',
+            '--retries', '5',
+            '--fragment-retries', '10',
+            '--file-access-retries', '3',
+            ...getCookieArgs(),
+            '--ffmpeg-location', FFMPEG_DIR,
+            '-o', path.join(tmpDir, '%(title)s.%(ext)s'),
+        ];
+
+        // Format selection — use what was requested, with smart fallback chain
+        const formatArg = formatStr || 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best';
+        console.log(`[Job ${jobId}] format="${formatArg}"${isRetry ? ' (retry)' : ''}`);
+
+        // For YouTube: try multiple clients if needed
         if (isYouTubeUrl(url)) {
-            // YouTube specific arguments (universal format, performance flags)
-            args = [
-                '-f', 'bv*+ba/b',
-                '--merge-output-format', 'mp4',
-                '--no-playlist',
-                '--geo-bypass',
-                '--no-warnings',
-                '--concurrent-fragments', '5',
-                '--retries', '3',
-                ...getCookieArgs(),
-                '--ffmpeg-location', FFMPEG_DIR,
-                '-o', path.join(tmpDir, '%(title)s.%(ext)s'),
-                url
-            ];
-            console.log(`[Job ${jobId}] Downloading YouTube video with universal format...`);
-        } else {
-            // Logic for other platforms
-            args = [
-                '-f', formatStr,
-                '--no-warnings',
-                '--no-playlist',
-                '--merge-output-format', 'mp4',
-                '--user-agent', BROWSER_UA,
-                '--geo-bypass',
-                '--extractor-retries', '3',
-                '--file-access-retries', '5',
-                '--fragment-retries', '10',
-                ...getCookieArgs(),
-                '--ffmpeg-location', FFMPEG_DIR,
-                '-o', path.join(tmpDir, '%(title)s.%(ext)s'),
-                url
-            ];
-            console.log(`[Job ${jobId}] Downloading with format=${formatStr}${isRetry ? ' (fallback)' : ''}...`);
-        }
+            const clients = isRetry
+                ? ['ios', 'android', 'mweb']   // On retry, skip 'web' which may have bot issues
+                : ['web', 'ios', 'android'];
 
-        const ytdlp = spawn(YT_DLP_PATH, args);
-        let stderrData = '';
+            let lastErr = null;
+            for (const client of clients) {
+                const args = [
+                    '-f', formatArg,
+                    ...baseArgs,
+                    '--extractor-args', `youtube:player_client=${client}`,
+                    '--user-agent', BROWSER_UA,
+                    '--geo-bypass',
+                    url,
+                ];
 
-        ytdlp.stderr.on('data', (d) => { stderrData += d.toString(); });
+                try {
+                    console.log(`[Job ${jobId}] YouTube client=${client}...`);
+                    await new Promise((resolve, reject) => {
+                        const ytdlp = spawn(YT_DLP_PATH, args);
+                        let stderrData = '';
+                        ytdlp.stderr.on('data', d => { stderrData += d.toString(); });
+                        ytdlp.on('close', code => {
+                            if (code === 0) return resolve(stderrData);
+                            const err = new Error(`exit ${code}`);
+                            err.stderr = stderrData;
+                            reject(err);
+                        });
+                        ytdlp.on('error', reject);
+                    });
 
-        ytdlp.on('close', (code) => {
-            const job = downloadJobs.get(jobId);
-            if (!job) return;
+                    // Success — pick the output file
+                    const job = downloadJobs.get(jobId);
+                    if (!job) return;
+                    const files = fs.readdirSync(tmpDir).filter(f => !f.endsWith('.part') && !f.endsWith('.ytdl'));
+                    if (files.length > 0) {
+                        job.status = 'ready';
+                        job.file = path.join(tmpDir, files[0]);
+                        console.log(`[Job ${jobId}] ✅ Done (${client}): ${files[0]}`);
+                    } else {
+                        job.status = 'error';
+                        job.error = 'Download completed but output file is missing.';
+                    }
+                    return; // Done
 
-            if (code === 0) {
-                const files = fs.readdirSync(tmpDir);
-                if (files.length > 0) {
-                    job.status = 'ready';
-                    job.file = path.join(tmpDir, files[0]);
-                    console.log(`[Job ${jobId}] Done: ${files[0]}`);
-                } else {
-                    job.status = 'error';
-                    job.error = 'No output file.';
+                } catch (err) {
+                    const stderr = err.stderr || '';
+                    const isBotError = stderr.includes('Sign in') || stderr.includes('bot') || stderr.includes('confirm');
+                    const isFormatError = stderr.includes('Requested format is not available') || stderr.includes('not available');
+
+                    console.log(`[Job ${jobId}] ❌ client=${client}: ${stderr.split('\n').pop()?.trim()}`);
+                    lastErr = err;
+
+                    // On format error: immediately retry with best format (no point trying other clients)
+                    if (isFormatError && !isRetry) {
+                        console.log(`[Job ${jobId}] Format unavailable, falling back to best...`);
+                        try { fs.readdirSync(tmpDir).forEach(f => fs.unlinkSync(path.join(tmpDir, f))); } catch {}
+                        return runDownload('bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best', true);
+                    }
+
+                    // Only try other clients if it's a bot/auth error
+                    if (!isBotError) break;
                 }
-            } else {
-                const isFormatError = stderrData.includes('Requested format is not available') || stderrData.includes('format is not available');
-                const isSignInError = stderrData.includes('Sign in') || stderrData.includes('bot');
-
-                // If format error and haven't retried with 'best' yet, try fallback
-                if (isFormatError && !isRetry) {
-                    console.log(`[Job ${jobId}] Format "${formatStr}" unavailable, falling back to best...`);
-                    try { const files = fs.readdirSync(tmpDir); files.forEach(f => fs.unlinkSync(path.join(tmpDir, f))); } catch { }
-                    runDownload('bestvideo+bestaudio/best', true);
-                    return;
-                }
-
-                console.error(`[Job ${jobId}] Error: ${stderrData.trim().split('\n').pop()}`);
-                job.status = 'error';
-                job.error = isSignInError
-                    ? 'YouTube is blocking downloads from this server.'
-                    : isFormatError
-                    ? 'Requested format unavailable. Please try a different quality.'
-                    : 'Download failed.';
-                try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { }
             }
-        });
 
-        ytdlp.on('error', (err) => {
+            // All clients failed
             const job = downloadJobs.get(jobId);
             if (job) {
+                const stderr = lastErr?.stderr || '';
                 job.status = 'error';
-                job.error = err.message;
+                job.error = stderr.includes('Sign in') || stderr.includes('bot')
+                    ? 'YouTube is blocking this download. Please try again in a few minutes.'
+                    : 'Download failed. Please try a different quality or try again.';
+                try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
             }
-        });
+
+        } else {
+            // Non-YouTube: single attempt with geo-bypass
+            const args = [
+                '-f', formatArg,
+                ...baseArgs,
+                '--user-agent', BROWSER_UA,
+                '--geo-bypass',
+                url,
+            ];
+
+            const ytdlp = spawn(YT_DLP_PATH, args);
+            let stderrData = '';
+            ytdlp.stderr.on('data', d => { stderrData += d.toString(); });
+
+            ytdlp.on('close', code => {
+                const job = downloadJobs.get(jobId);
+                if (!job) return;
+
+                if (code === 0) {
+                    const files = fs.readdirSync(tmpDir).filter(f => !f.endsWith('.part') && !f.endsWith('.ytdl'));
+                    if (files.length > 0) {
+                        job.status = 'ready';
+                        job.file = path.join(tmpDir, files[0]);
+                        console.log(`[Job ${jobId}] ✅ Done: ${files[0]}`);
+                    } else {
+                        job.status = 'error';
+                        job.error = 'No output file after download completed.';
+                    }
+                } else {
+                    const isFormatError = stderrData.includes('Requested format is not available');
+                    if (isFormatError && !isRetry) {
+                        console.log(`[Job ${jobId}] Format unavailable, trying best...`);
+                        try { fs.readdirSync(tmpDir).forEach(f => fs.unlinkSync(path.join(tmpDir, f))); } catch {}
+                        return runDownload('bestvideo+bestaudio/best', true);
+                    }
+                    console.error(`[Job ${jobId}] Error: ${stderrData.split('\n').pop()?.trim()}`);
+                    job.status = 'error';
+                    job.error = isFormatError
+                        ? 'Requested format unavailable. Try a different quality.'
+                        : 'Download failed. Please try again.';
+                    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+                }
+            });
+
+            ytdlp.on('error', err => {
+                const job = downloadJobs.get(jobId);
+                if (job) { job.status = 'error'; job.error = err.message; }
+            });
+        }
     }
 
-    runDownload(format_id || 'bestvideo+bestaudio/best');
+    runDownload(format_id || 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best');
 });
+
 
 // ═════════════════════════════════════════════════════════
 // API: Download Status
