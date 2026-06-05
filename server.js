@@ -632,39 +632,67 @@ app.get('/api/download-status', (req, res) => {
 // ═════════════════════════════════════════════════════════
 
 app.get('/api/download', (req, res) => {
-    const job = downloadJobs.get(req.query.jobId);
-    if (!job || job.status !== 'ready' || !job.file) {
-        return res.status(400).json({ error: 'Download not ready.' });
-    }
-
-    const filename = path.basename(job.file).replace(/[<>:"|?*]/g, '_');
-    let stat;
     try {
-        stat = fs.statSync(job.file);
-    } catch {
-        downloadJobs.delete(req.query.jobId);
-        try { fs.rmSync(job.tmpDir, { recursive: true, force: true }); } catch {}
-        return res.status(404).json({ error: 'File no longer available.' });
+        const job = downloadJobs.get(req.query.jobId);
+        if (!job) {
+            return res.status(404).json({ error: 'Download not found. Please start a new download.' });
+        }
+        if (job.status === 'error') {
+            return res.status(500).json({ error: job.error || 'Download failed. Please try again.' });
+        }
+        if (job.status !== 'ready' || !job.file) {
+            return res.status(400).json({ error: 'Download not ready. Please wait for it to finish processing.' });
+        }
+
+        const filename = path.basename(job.file).replace(/[<>:"|?*]/g, '_');
+        let stat;
+        try {
+            stat = fs.statSync(job.file);
+        } catch {
+            downloadJobs.delete(req.query.jobId);
+            try { fs.rmSync(job.tmpDir, { recursive: true, force: true }); } catch {}
+            return res.status(404).json({ error: 'File no longer available. Please start a new download.' });
+        }
+
+        if (stat.size === 0) {
+            downloadJobs.delete(req.query.jobId);
+            try { fs.rmSync(job.tmpDir, { recursive: true, force: true }); } catch {}
+            return res.status(500).json({ error: 'Downloaded file is empty. Please try again.' });
+        }
+
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.setHeader('Content-Type', 'application/octet-stream');
+        res.setHeader('Content-Length', stat.size);
+
+        const stream = fs.createReadStream(job.file);
+
+        let cleaned = false;
+        function cleanup() {
+            if (cleaned) return;
+            cleaned = true;
+            try { fs.rmSync(job.tmpDir, { recursive: true, force: true }); } catch {}
+            downloadJobs.delete(req.query.jobId);
+        }
+
+        stream.on('end', cleanup);
+        stream.on('error', (err) => {
+            console.error('Stream error during download:', err.message);
+            cleanup();
+            if (!res.headersSent) {
+                res.status(500).json({ error: 'Stream error during download.' });
+            } else {
+                try { res.end(); } catch {}
+            }
+        });
+        stream.on('close', cleanup);
+
+        stream.pipe(res);
+    } catch (err) {
+        console.error('Unexpected error in /api/download:', err);
+        if (!res.headersSent) {
+            res.status(500).json({ error: 'Internal server error during download.' });
+        }
     }
-
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.setHeader('Content-Type', 'application/octet-stream');
-    res.setHeader('Content-Length', stat.size);
-
-    const stream = fs.createReadStream(job.file);
-    stream.pipe(res);
-
-    let cleaned = false;
-    function cleanup() {
-        if (cleaned) return;
-        cleaned = true;
-        try { fs.rmSync(job.tmpDir, { recursive: true, force: true }); } catch {}
-        downloadJobs.delete(req.query.jobId);
-    }
-
-    stream.on('end', cleanup);
-    stream.on('error', cleanup);
-    stream.on('close', cleanup);
 });
 
 // ═════════════════════════════════════════════════════════
@@ -733,6 +761,28 @@ function detectPlatform(url) {
     return 'Media';
 }
 
+// ═════════════════════════════════════════════════════════
+// 404 + Global Error Handlers (must be registered last)
+// ═════════════════════════════════════════════════════════
+
+app.use((req, res) => {
+    res.status(404).json({ error: 'Not found.', path: req.path });
+});
+
+app.use((err, req, res, next) => {
+    console.error('Unhandled error:', err);
+    if (res.headersSent) return next(err);
+    res.status(500).json({ error: 'Internal server error.', message: err.message });
+});
+
+process.on('unhandledRejection', (reason) => {
+    console.error('Unhandled Promise Rejection:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+    console.error('Uncaught Exception:', err);
+});
+
 // ══════════════════════════════════════════════════════
 // Start Server
 // ══════════════════════════════════════════════════════
@@ -742,6 +792,9 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('═══════════════════════════════════════════════════');
     console.log(`  🚀  SmartSave.io API — PORT ${PORT}`);
     console.log(`  🐧  ${os.platform()} | Node ${process.version}`);
+    console.log(`  📍  __dirname: ${__dirname}`);
+    console.log(`  📍  yt-dlp: ${YT_DLP_PATH}`);
+    console.log(`  📍  ffmpeg: ${FFMPEG_PATH}`);
     console.log('───────────────────────────────────────────────────');
 
     ytDlpVersion = testBinary('yt-dlp', YT_DLP_PATH, '--version');
