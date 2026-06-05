@@ -5,6 +5,7 @@
 // ═══════════════════════════════════════════════════════════
 
 import { States, isLoadingState } from '../core/stateMachine.js';
+import { escapeHtml } from './htmlUtils.js';
 
 const CIRCUMFERENCE = 2 * Math.PI * 54; // matches circular-loader r=54
 
@@ -127,8 +128,4 @@ function renderError(error) {
       <p class="engine__error-msg">${escapeHtml(error || 'Could not process this URL.')}</p>
     </div>
   `;
-}
-
-function escapeHtml(str) {
-  return (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }

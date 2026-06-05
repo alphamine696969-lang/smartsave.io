@@ -40,6 +40,9 @@ const routes = {
   '/download/pinterest': () => renderPinterestDownloader(),
   '/download/tiktok':    () => renderTikTokDownloader(),
   '/download/facebook':  () => renderFacebookDownloader(),
+
+  // 404 fallback
+  '/404': () => renderHome(),
 };
 
 // ── Start Router ──

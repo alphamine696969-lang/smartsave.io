@@ -32,6 +32,21 @@ export function usePlatformHandler(url, onStateChange) {
   const downloader = useDownloader(url, onStateChange);
   return {
     config: PlatformConfig,
-    actions: downloader.actions,
+    actions: {
+      ...downloader.actions,
+      fetch() {
+        const { pattern, patternError } = PlatformConfig.validationRules;
+        if (url && !pattern.test(url)) {
+          onStateChange({
+            state: 'INVALID',
+            error: patternError,
+            mediaData: null,
+            progress: null,
+          });
+          return;
+        }
+        return downloader.actions.fetch();
+      },
+    },
   };
 }

@@ -22,3 +22,4 @@ Dockerfile
 .dockerignore
 .env
 .env.*
+cookies.txt

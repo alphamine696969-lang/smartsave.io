@@ -7,6 +7,8 @@ export class Router {
     this.routes = routes;
     this.app = appElement;
     this.currentRoute = null;
+    this._scrollObserver = null;
+    this._progressTimer = null;
 
     window.addEventListener('hashchange', () => this.navigate());
     window.addEventListener('load', () => this.navigate());
@@ -52,13 +54,14 @@ export class Router {
     });
 
     // Scroll to top
-    window.scrollTo({ top: 0, behavior: 'instant' });
+    window.scrollTo({ top: 0, behavior: 'auto' });
 
     // Initialize scroll reveals
     this.initScrollReveal();
 
     // Remove progress bar
-    setTimeout(() => {
+    clearTimeout(this._progressTimer);
+    this._progressTimer = setTimeout(() => {
       if (progressBar) {
         progressBar.classList.remove('active');
         progressBar.style.width = '0%';
@@ -70,19 +73,24 @@ export class Router {
   }
 
   initScrollReveal() {
+    // Disconnect previous observer to prevent memory leaks
+    if (this._scrollObserver) {
+      this._scrollObserver.disconnect();
+    }
+
     const reveals = document.querySelectorAll('.reveal');
     if (!reveals.length) return;
 
-    const observer = new IntersectionObserver((entries) => {
+    this._scrollObserver = new IntersectionObserver((entries) => {
       entries.forEach(entry => {
         if (entry.isIntersecting) {
           entry.target.classList.add('visible');
-          observer.unobserve(entry.target);
+          this._scrollObserver.unobserve(entry.target);
         }
       });
     }, { threshold: 0.15, rootMargin: '0px 0px -40px 0px' });
 
-    reveals.forEach(el => observer.observe(el));
+    reveals.forEach(el => this._scrollObserver.observe(el));
   }
 
   wait(ms) {

@@ -20,12 +20,12 @@
   <meta property="og:image" content="https://smartsave.io/og-image.jpg" />
 
   <!-- Twitter -->
-  <meta property="twitter:card" content="summary_large_image" />
-  <meta property="twitter:url" content="https://smartsave.io/" />
-  <meta property="twitter:title" content="SmartSave.io — Download Anything. Instantly." />
-  <meta property="twitter:description"
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:url" content="https://smartsave.io/" />
+  <meta name="twitter:title" content="SmartSave.io — Download Anything. Instantly." />
+  <meta name="twitter:description"
     content="Free online video downloader. Download high-quality videos and audio from YouTube, Instagram, Twitter, Facebook and more." />
-  <meta property="twitter:image" content="https://smartsave.io/og-image.jpg" />
+  <meta name="twitter:image" content="https://smartsave.io/og-image.jpg" />
 
   <!-- JSON-LD Structured Data -->
   <script type="application/ld+json">
@@ -45,9 +45,8 @@
   }
   </script>
 
-  <!-- Google AdSense -->
-  <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-XXXXXXXXXXXXXXXX"
-    crossorigin="anonymous"></script>
+  <!-- Google AdSense (replace ca-pub-XXXXXXXXXXXXXXXX with your actual publisher ID) -->
+  <!-- <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-XXXXXXXXXXXXXXXX" crossorigin="anonymous"></script> -->
 
   <title>SmartSave.io — Download Anything. Instantly.</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -62,7 +61,14 @@
   <div id="progress-bar" class="progress-bar"></div>
   <nav id="navbar"></nav>
 
-  <main id="app"></main>
+  <main id="app">
+    <noscript>
+      <div style="padding: 2rem; text-align: center; color: #ccc; background: #0B0F19; min-height: 100vh; font-family: sans-serif;">
+        <h1>JavaScript Required</h1>
+        <p>SmartSave.io requires JavaScript to run. Please enable JavaScript in your browser and reload the page.</p>
+      </div>
+    </noscript>
+  </main>
 
   <footer id="footer-root"></footer>
   <script type="module" src="/src/main.js"></script>

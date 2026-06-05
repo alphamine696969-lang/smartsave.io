@@ -4,6 +4,7 @@
 // ═══════════════════════════════════════════════════════════
 
 import { isInputEnabled } from '../core/stateMachine.js';
+import { escapeHtml, escapeAttr } from './htmlUtils.js';
 
 /**
  * @param {{
@@ -59,18 +60,4 @@ export function UrlInputSection({ url, state, error }) {
       </button>
     </form>
   `;
-}
-
-/** Escape for HTML attribute values */
-function escapeAttr(str) {
-  return (str || '').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-}
-
-/** Escape for HTML text content */
-function escapeHtml(str) {
-  return (str || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 }

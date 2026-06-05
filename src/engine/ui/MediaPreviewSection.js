@@ -5,6 +5,7 @@
 // ═══════════════════════════════════════════════════════════
 
 import { States } from '../core/stateMachine.js';
+import { escapeHtml, escapeAttr } from './htmlUtils.js';
 
 /**
  * @param {{
@@ -56,7 +57,7 @@ function renderPreview(data) {
   const metaItems = [
     data.platform   && `<span class="engine__meta-item">🌐 ${escapeHtml(data.platform)}</span>`,
     data.duration   && `<span class="engine__meta-item">⏱ ${formatDuration(data.duration)}</span>`,
-    data.width && data.height && `<span class="engine__meta-item">📐 ${data.width}×${data.height}</span>`,
+    data.width && data.height && `<span class="engine__meta-item">📐 ${escapeHtml(String(data.width))}×${escapeHtml(String(data.height))}</span>`,
     data.uploader   && `<span class="engine__meta-item">👤 ${escapeHtml(data.uploader)}</span>`,
   ].filter(Boolean).join('');
 
@@ -84,15 +85,4 @@ function formatDuration(sec) {
   const s = Math.floor(sec % 60);
   if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
   return `${m}:${String(s).padStart(2, '0')}`;
-}
-
-function escapeAttr(str) {
-  return (str || '').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-}
-
-function escapeHtml(str) {
-  return (str || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
 }

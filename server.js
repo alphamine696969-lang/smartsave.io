@@ -75,19 +75,16 @@ function setupCookies() {
     if (cookiesEnv) {
         try {
             fs.writeFileSync(COOKIES_PATH, cookiesEnv, 'utf8');
-            console.log('  🍪  YouTube cookies loaded from env var');
             return true;
         } catch (err) {
-            console.error('  ⚠️  Failed to write cookies:', err.message);
+            console.error('Failed to write cookies:', err.message);
         }
     }
     // Also check for a cookies.txt file in the app directory
     const localCookies = path.join(__dirname, 'cookies.txt');
     if (fs.existsSync(localCookies)) {
-        console.log('  🍪  YouTube cookies found at cookies.txt');
         return true;
     }
-    console.log('  ℹ️   No YouTube cookies configured (set YOUTUBE_COOKIES env var for best results)');
     return false;
 }
 
@@ -109,16 +106,19 @@ function getCookieArgs() {
 
 const downloadJobs = new Map();
 
-// Clean up stale jobs every hour
-setInterval(() => {
+// Clean up stale jobs every hour (skip in-progress jobs)
+const cleanupInterval = setInterval(() => {
     const now = Date.now();
     for (const [jobId, job] of downloadJobs.entries()) {
-        if (now - job.createdAt > 3600_000) {
-            try { fs.rmSync(job.tmpDir, { recursive: true, force: true }); } catch { }
+        if (now - job.createdAt > 3600_000 && job.status !== 'processing') {
+            try { fs.rmSync(job.tmpDir, { recursive: true, force: true }); } catch (err) {
+                if (err.code !== 'ENOENT') console.error('Cleanup failed:', err.message);
+            }
             downloadJobs.delete(jobId);
         }
     }
 }, 3600_000);
+cleanupInterval.unref();
 
 // ══════════════════════════════════════════════════════
 // Middleware
@@ -130,7 +130,7 @@ app.use(cors({
         'http://127.0.0.1:5173',
         'http://localhost:3000',
         /\.vercel\.app$/,
-        /smartsave/,
+        /^https:\/\/([a-z0-9-]+\.)?smartsave\.io$/,
         /\.onrender\.com$/,
     ],
     methods: ['GET', 'POST'],
@@ -144,8 +144,19 @@ const requestCounts = new Map();
 const RATE_LIMIT = 20;
 const RATE_WINDOW = 60_000;
 
+// Clean up stale rate limit entries every 5 minutes
+const rateLimitInterval = setInterval(() => {
+    const now = Date.now();
+    for (const [ip, entry] of requestCounts.entries()) {
+        if (now - entry.start > RATE_WINDOW) {
+            requestCounts.delete(ip);
+        }
+    }
+}, 300_000);
+rateLimitInterval.unref();
+
 function rateLimit(req, res, next) {
-    const ip = req.ip || req.connection?.remoteAddress;
+    const ip = req.ip || req.socket?.remoteAddress;
     const now = Date.now();
     const entry = requestCounts.get(ip);
 
@@ -191,7 +202,7 @@ function testBinary(name, binaryPath, versionArg = '--version') {
             timeout: 15000
         });
         const version = output.trim().split('\n')[0];
-        console.log(`  ✅  ${name} → ${binaryPath} (${version})`);
+        console.log(`  ✅  ${name} → ${version}`);
         return version;
     } catch (err) {
         console.error(`  ⚠️  ${name} found but FAILED to run: ${err.message}`);
@@ -208,47 +219,12 @@ function checkYtDlp() {
 // ═════════════════════════════════════════════════════════
 
 const YOUTUBE_CLIENTS = ['web', 'ios', 'android', 'mweb', 'tv_embedded'];
+const YOUTUBE_RETRY_CLIENTS = ['ios', 'android', 'mweb', 'tv_embedded', 'web'];
 const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
 function isYouTubeUrl(url) {
     const l = url.toLowerCase();
     return l.includes('youtube') || l.includes('youtu.be');
-}
-
-// Try yt-dlp with multiple YouTube player clients until one works
-async function ytDlpWithRetry(args, url, timeout = 120000) {
-    if (!isYouTubeUrl(url)) {
-        // Non-YouTube: run directly, no retry
-        return execFileAsync(YT_DLP_PATH, args, { timeout, maxBuffer: 10 * 1024 * 1024 });
-    }
-
-    // YouTube: try each player client
-    let lastError = null;
-    for (const client of YOUTUBE_CLIENTS) {
-        try {
-            const ytArgs = [
-                ...args,
-                '--extractor-args', `youtube:player_client=${client}`,
-                '--user-agent', BROWSER_UA,
-                '--geo-bypass',
-                '--extractor-retries', '3',
-            ];
-            console.log(`  ▶ YouTube: trying client=${client}...`);
-            const result = await execFileAsync(YT_DLP_PATH, ytArgs, { timeout, maxBuffer: 10 * 1024 * 1024 });
-            console.log(`  ✅ YouTube: client=${client} worked!`);
-            return result;
-        } catch (err) {
-            const stderr = err.stderr || '';
-            console.log(`  ❌ YouTube: client=${client} failed: ${stderr.trim().split('\n').pop()}`);
-            lastError = err;
-            // If it's not a sign-in/bot issue, don't bother trying other clients
-            if (!stderr.includes('Sign in') && !stderr.includes('bot') && !stderr.includes('confirm')) {
-                throw err;
-            }
-        }
-    }
-    // All clients failed
-    throw lastError;
 }
 
 // ═════════════════════════════════════════════════════════
@@ -288,20 +264,20 @@ app.post('/api/info', rateLimit, async (req, res) => {
         ];
 
         try {
-            console.log(`[/api/info] Trying${client ? ` client=${client}` : ''}: ${url}`);
             const { stdout } = await execFileAsync(YT_DLP_PATH, args, {
                 timeout: 90_000,
                 maxBuffer: 20 * 1024 * 1024,
             });
-            info = JSON.parse(stdout);
-            console.log(`[/api/info] ✅ Success${client ? ` (${client})` : ''}: ${info.title}`);
+            try {
+                info = JSON.parse(stdout);
+            } catch {
+                lastErr = { stderr: 'Response too large or corrupt. Try a different URL.' };
+                break;
+            }
             break;
         } catch (err) {
             const stderr = (err.stderr || err.message || '').trim();
-            const lastLine = stderr.split('\n').pop() || '';
-            console.log(`[/api/info] ❌${client ? ` client=${client}` : ''} failed: ${lastLine}`);
-            lastErr = err;
-            lastErr._stderr = stderr;
+            lastErr = { originalError: err, stderr };
             // Only try more clients for bot/geo-block errors
             const isBotBlock = stderr.includes('Sign in') || stderr.includes('login') || stderr.includes('bot') || stderr.includes('confirm') || stderr.includes('not available in your country');
             if (!isBotBlock) break;
@@ -309,9 +285,8 @@ app.post('/api/info', rateLimit, async (req, res) => {
     }
 
     if (!info) {
-        const stderr = (lastErr?._stderr || lastErr?.message || '').trim();
+        const stderr = (lastErr?.stderr || lastErr?.message || '').trim();
         const lastLine = stderr.split('\n').pop() || '';
-        console.error('[/api/info] All attempts failed:', lastLine);
         if (lastErr?.killed || stderr.includes('timeout') || stderr.includes('ETIMEDOUT')) {
             return res.status(408).json({ error: 'Request timed out. Please try again.' });
         }
@@ -447,7 +422,6 @@ app.get('/api/prepare-download', rateLimit, (req, res) => {
     });
 
     res.json({ success: true, jobId });
-    console.log(`[Job ${jobId}] Starting: format=${format_id || 'best'}`);
 
     // Run download with format + retry logic
     async function runDownload(formatStr, isRetry = false) {
@@ -458,9 +432,11 @@ app.get('/api/prepare-download', rateLimit, (req, res) => {
             '--no-check-certificate',
             '--merge-output-format', 'mp4',
             '--concurrent-fragments', '4',
-            '--retries', '5',
-            '--fragment-retries', '10',
-            '--file-access-retries', '3',
+            '--retries', '10',
+            '--fragment-retries', '20',
+            '--file-access-retries', '5',
+            '--extractor-retries', '5',
+            '--socket-timeout', '30',
             ...getCookieArgs(),
             '--ffmpeg-location', FFMPEG_DIR,
             '-o', path.join(tmpDir, '%(title)s.%(ext)s'),
@@ -468,13 +444,10 @@ app.get('/api/prepare-download', rateLimit, (req, res) => {
 
         // Format selection — use what was requested, with smart fallback chain
         const formatArg = formatStr || 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best';
-        console.log(`[Job ${jobId}] format="${formatArg}"${isRetry ? ' (retry)' : ''}`);
 
         // For YouTube: try multiple clients if needed
         if (isYouTubeUrl(url)) {
-            const clients = isRetry
-                ? ['ios', 'android', 'mweb']   // On retry, skip 'web' which may have bot issues
-                : ['web', 'ios', 'android'];
+            const clients = isRetry ? YOUTUBE_RETRY_CLIENTS : YOUTUBE_CLIENTS;
 
             let lastErr = null;
             for (const client of clients) {
@@ -488,28 +461,30 @@ app.get('/api/prepare-download', rateLimit, (req, res) => {
                 ];
 
                 try {
-                    console.log(`[Job ${jobId}] YouTube client=${client}...`);
                     await new Promise((resolve, reject) => {
-                        const ytdlp = spawn(YT_DLP_PATH, args);
+                        const ytdlp = spawn(YT_DLP_PATH, args, { stdio: ['ignore', 'ignore', 'pipe'] });
                         let stderrData = '';
                         ytdlp.stderr.on('data', d => { stderrData += d.toString(); });
+                        const timer = setTimeout(() => { ytdlp.kill('SIGTERM'); }, 300_000);
                         ytdlp.on('close', code => {
+                            clearTimeout(timer);
                             if (code === 0) return resolve(stderrData);
                             const err = new Error(`exit ${code}`);
                             err.stderr = stderrData;
                             reject(err);
                         });
-                        ytdlp.on('error', reject);
+                        ytdlp.on('error', err => { clearTimeout(timer); reject(err); });
                     });
 
-                    // Success — pick the output file
+                    // Success — pick the largest output file (most likely the actual download)
                     const job = downloadJobs.get(jobId);
                     if (!job) return;
                     const files = fs.readdirSync(tmpDir).filter(f => !f.endsWith('.part') && !f.endsWith('.ytdl'));
                     if (files.length > 0) {
+                        const mediaFiles = files.filter(f => /\.(mp4|mkv|webm|m4a|mp3|opus|mov)$/i.test(f));
+                        const bestFile = mediaFiles.length > 0 ? mediaFiles[0] : files[0];
                         job.status = 'ready';
-                        job.file = path.join(tmpDir, files[0]);
-                        console.log(`[Job ${jobId}] ✅ Done (${client}): ${files[0]}`);
+                        job.file = path.join(tmpDir, bestFile);
                     } else {
                         job.status = 'error';
                         job.error = 'Download completed but output file is missing.';
@@ -518,32 +493,48 @@ app.get('/api/prepare-download', rateLimit, (req, res) => {
 
                 } catch (err) {
                     const stderr = err.stderr || '';
-                    const isBotError = stderr.includes('Sign in') || stderr.includes('bot') || stderr.includes('confirm');
+                    const isBotError = stderr.includes('Sign in') || stderr.includes('bot') || stderr.includes('confirm') || stderr.includes('not available');
                     const isFormatError = stderr.includes('Requested format is not available') || stderr.includes('not available');
+                    const isBlocked = stderr.includes('HTTP Error 403') || stderr.includes('Too Many Requests') || stderr.includes('429');
 
-                    console.log(`[Job ${jobId}] ❌ client=${client}: ${stderr.split('\n').pop()?.trim()}`);
                     lastErr = err;
 
-                    // On format error: immediately retry with best format (no point trying other clients)
+                    // On format error: immediately retry with best format
                     if (isFormatError && !isRetry) {
-                        console.log(`[Job ${jobId}] Format unavailable, falling back to best...`);
-                        try { fs.readdirSync(tmpDir).forEach(f => fs.unlinkSync(path.join(tmpDir, f))); } catch {}
+                        try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+                        fs.mkdirSync(tmpDir, { recursive: true });
                         return runDownload('bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best', true);
                     }
 
-                    // Only try other clients if it's a bot/auth error
-                    if (!isBotError) break;
+                    // On 403/block errors: try next client
+                    if (isBotError || isBlocked) {
+                        continue;
+                    }
+
+                    // Non-bot error: don't try other clients
+                    break;
                 }
             }
 
-            // All clients failed
+            // All clients failed — if not already retried, do a full retry with best format
+            if (!isRetry) {
+                try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+                fs.mkdirSync(tmpDir, { recursive: true });
+                return runDownload('bestvideo+bestaudio/best', true);
+            }
+
+            // All retries exhausted
             const job = downloadJobs.get(jobId);
             if (job) {
                 const stderr = lastErr?.stderr || '';
                 job.status = 'error';
-                job.error = stderr.includes('Sign in') || stderr.includes('bot')
-                    ? 'YouTube is blocking this download. Please try again in a few minutes.'
-                    : 'Download failed. Please try a different quality or try again.';
+                if (stderr.includes('Sign in') || stderr.includes('bot') || stderr.includes('confirm')) {
+                    job.error = 'YouTube is blocking this download. Please try again in a few minutes or try a different video.';
+                } else if (stderr.includes('HTTP Error 403') || stderr.includes('429')) {
+                    job.error = 'YouTube rate-limited this request. Please wait a few minutes and try again.';
+                } else {
+                    job.error = 'Download failed. Please try a different quality or try again.';
+                }
                 try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
             }
 
@@ -557,20 +548,23 @@ app.get('/api/prepare-download', rateLimit, (req, res) => {
                 url,
             ];
 
-            const ytdlp = spawn(YT_DLP_PATH, args);
+            const ytdlp = spawn(YT_DLP_PATH, args, { stdio: ['ignore', 'ignore', 'pipe'] });
             let stderrData = '';
             ytdlp.stderr.on('data', d => { stderrData += d.toString(); });
+            const timer = setTimeout(() => { ytdlp.kill('SIGTERM'); }, 300_000);
 
             ytdlp.on('close', code => {
+                clearTimeout(timer);
                 const job = downloadJobs.get(jobId);
                 if (!job) return;
 
                 if (code === 0) {
                     const files = fs.readdirSync(tmpDir).filter(f => !f.endsWith('.part') && !f.endsWith('.ytdl'));
                     if (files.length > 0) {
+                        const mediaFiles = files.filter(f => /\.(mp4|mkv|webm|m4a|mp3|opus|mov)$/i.test(f));
+                        const bestFile = mediaFiles.length > 0 ? mediaFiles[0] : files[0];
                         job.status = 'ready';
-                        job.file = path.join(tmpDir, files[0]);
-                        console.log(`[Job ${jobId}] ✅ Done: ${files[0]}`);
+                        job.file = path.join(tmpDir, bestFile);
                     } else {
                         job.status = 'error';
                         job.error = 'No output file after download completed.';
@@ -578,11 +572,10 @@ app.get('/api/prepare-download', rateLimit, (req, res) => {
                 } else {
                     const isFormatError = stderrData.includes('Requested format is not available');
                     if (isFormatError && !isRetry) {
-                        console.log(`[Job ${jobId}] Format unavailable, trying best...`);
-                        try { fs.readdirSync(tmpDir).forEach(f => fs.unlinkSync(path.join(tmpDir, f))); } catch {}
+                        try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+                        fs.mkdirSync(tmpDir, { recursive: true });
                         return runDownload('bestvideo+bestaudio/best', true);
                     }
-                    console.error(`[Job ${jobId}] Error: ${stderrData.split('\n').pop()?.trim()}`);
                     job.status = 'error';
                     job.error = isFormatError
                         ? 'Requested format unavailable. Try a different quality.'
@@ -592,6 +585,7 @@ app.get('/api/prepare-download', rateLimit, (req, res) => {
             });
 
             ytdlp.on('error', err => {
+                clearTimeout(timer);
                 const job = downloadJobs.get(jobId);
                 if (job) { job.status = 'error'; job.error = err.message; }
             });
@@ -623,7 +617,14 @@ app.get('/api/download', (req, res) => {
     }
 
     const filename = path.basename(job.file).replace(/[<>:"|?*]/g, '_');
-    const stat = fs.statSync(job.file);
+    let stat;
+    try {
+        stat = fs.statSync(job.file);
+    } catch {
+        downloadJobs.delete(req.query.jobId);
+        try { fs.rmSync(job.tmpDir, { recursive: true, force: true }); } catch {}
+        return res.status(404).json({ error: 'File no longer available.' });
+    }
 
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.setHeader('Content-Type', 'application/octet-stream');
@@ -632,15 +633,17 @@ app.get('/api/download', (req, res) => {
     const stream = fs.createReadStream(job.file);
     stream.pipe(res);
 
-    stream.on('end', () => {
-        try { fs.rmSync(job.tmpDir, { recursive: true, force: true }); } catch { }
+    let cleaned = false;
+    function cleanup() {
+        if (cleaned) return;
+        cleaned = true;
+        try { fs.rmSync(job.tmpDir, { recursive: true, force: true }); } catch {}
         downloadJobs.delete(req.query.jobId);
-    });
+    }
 
-    stream.on('error', () => {
-        try { fs.rmSync(job.tmpDir, { recursive: true, force: true }); } catch { }
-        downloadJobs.delete(req.query.jobId);
-    });
+    stream.on('end', cleanup);
+    stream.on('error', cleanup);
+    stream.on('close', cleanup);
 });
 
 // ═════════════════════════════════════════════════════════
@@ -654,10 +657,6 @@ app.get('/api/health', (req, res) => {
         ffmpegReady: ffmpegVersion !== null,
         ytDlpVersion: ytDlpVersion || 'NOT FOUND',
         ffmpegVersion: ffmpegVersion || 'NOT FOUND',
-        ytDlpPath: YT_DLP_PATH,
-        ffmpegPath: FFMPEG_PATH,
-        platform: os.platform(),
-        nodeVersion: process.version,
         timestamp: new Date().toISOString()
     });
 });
@@ -666,13 +665,16 @@ app.get('/api/health', (req, res) => {
 // API: Quick Test (diagnose yt-dlp issues)
 // ═════════════════════════════════════════════════════════
 
-app.get('/api/test', async (req, res) => {
+app.get('/api/test', rateLimit, async (req, res) => {
     const testUrl = req.query.url || 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+    if (!isValidUrl(testUrl)) {
+        return res.status(400).json({ error: 'Invalid URL.' });
+    }
     if (!checkYtDlp()) {
-        return res.json({ error: 'yt-dlp binary not found', ytDlpPath: YT_DLP_PATH });
+        return res.status(503).json({ error: 'yt-dlp binary not found.' });
     }
     try {
-        const { stdout, stderr } = await execFileAsync(YT_DLP_PATH, [
+        const { stdout } = await execFileAsync(YT_DLP_PATH, [
             '--dump-json', '--no-download', '--no-warnings', '--no-playlist',
             ...getCookieArgs(),
             '--ffmpeg-location', FFMPEG_DIR,
@@ -688,12 +690,10 @@ app.get('/api/test', async (req, res) => {
             message: 'yt-dlp is working correctly!'
         });
     } catch (err) {
-        res.json({
+        res.status(500).json({
             success: false,
             error: err.message,
-            stderr: err.stderr || null,
             killed: err.killed || false,
-            code: err.code || null
         });
     }
 });
@@ -716,7 +716,7 @@ function detectPlatform(url) {
 // Start Server
 // ══════════════════════════════════════════════════════
 
-app.listen(PORT, '0.0.0.0', () => {
+const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('');
     console.log('═══════════════════════════════════════════════════');
     console.log(`  🚀  SmartSave.io API — PORT ${PORT}`);
@@ -725,13 +725,31 @@ app.listen(PORT, '0.0.0.0', () => {
 
     ytDlpVersion = testBinary('yt-dlp', YT_DLP_PATH, '--version');
     ffmpegVersion = testBinary('ffmpeg', FFMPEG_PATH, '-version');
-    setupCookies();
+    const hasCookies = setupCookies();
 
     if (!ytDlpVersion || !ffmpegVersion) {
         console.log('');
         console.log('  ⚠️  MISSING BINARIES — Downloads will fail!');
     }
+    if (!hasCookies) {
+        console.log('  ⚠️  No YouTube cookies — bot detection may block downloads.');
+    }
 
     console.log('═══════════════════════════════════════════════════');
     console.log('');
 });
+
+// ── Graceful Shutdown ──
+function gracefulShutdown(signal) {
+    console.log(`\nReceived ${signal}. Shutting down gracefully...`);
+    server.close(() => {
+        for (const [, job] of downloadJobs) {
+            try { fs.rmSync(job.tmpDir, { recursive: true, force: true }); } catch {}
+        }
+        downloadJobs.clear();
+        process.exit(0);
+    });
+    setTimeout(() => process.exit(1), 10_000);
+}
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));

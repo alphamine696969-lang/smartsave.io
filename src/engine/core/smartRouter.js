@@ -14,7 +14,7 @@ import { showToast }      from '../ui/ToastNotification.js';
 import { downloaderStore } from './downloaderStore.js';
 
 /** Maps platformId → dedicated SPA hash route */
-export const PLATFORM_ROUTES = Object.freeze({
+const PLATFORM_ROUTES = Object.freeze({
   youtube:   '/download/youtube',
   instagram: '/download/instagram',
   twitter:   '/download/twitter',
@@ -24,7 +24,7 @@ export const PLATFORM_ROUTES = Object.freeze({
 });
 
 /** Human-readable platform display names */
-export const PLATFORM_NAMES = Object.freeze({
+const PLATFORM_NAMES = Object.freeze({
   youtube:   'YouTube',
   instagram: 'Instagram',
   twitter:   'Twitter / X',
@@ -34,7 +34,7 @@ export const PLATFORM_NAMES = Object.freeze({
 });
 
 /** Platform brand colors — used only in toast chrome */
-export const PLATFORM_COLORS = Object.freeze({
+const PLATFORM_COLORS = Object.freeze({
   youtube:   '#FF0000',
   instagram: '#E1306C',
   twitter:   '#1DA1F2',
@@ -84,18 +84,4 @@ export function detectAndRoute(rawUrl, currentPlatformId = null) {
   setTimeout(() => navigateTo(targetRoute), 720);
 
   return { shouldRedirect: true, platformId };
-}
-
-/**
- * Programmatically navigate to a platform's dedicated page,
- * optionally setting a URL that the engine will auto-fetch.
- *
- * @param {string} platformId
- * @param {string} [url]
- */
-export function navigateToPlatform(platformId, url = '') {
-  const route = PLATFORM_ROUTES[platformId];
-  if (!route) return;
-  if (url) sessionStorage.setItem('downloadUrl', url);
-  navigateTo(route);
 }

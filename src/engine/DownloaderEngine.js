@@ -111,8 +111,11 @@ export function mount(container, initialUrl, platformContext = null) {
 
   let _pasteTimer = null;
 
+  let _bound = false;
   function bindEvents() {
-    container.addEventListener('submit', onFormSubmit, { once: true });
+    if (_bound) return;
+    _bound = true;
+    container.addEventListener('submit', onFormSubmit);
     container.addEventListener('click', onContainerClick);
     container.addEventListener('paste', onPaste);
   }

@@ -40,6 +40,8 @@ async function fetchWithRetry(url, options, onRetry) {
       const isRetryable =
         err.name === 'AbortError' ||
         err.message.includes('Failed to fetch') ||
+        err.message.includes('NetworkError') ||
+        err.message.includes('Load failed') ||
         err instanceof TypeError;
 
       if (attempt < MAX_RETRIES && isRetryable) {
@@ -113,7 +115,11 @@ export async function startDownloadJob(mediaUrl, formatId) {
     format_id: formatId,
   });
 
-  const response = await fetch(`${API_BASE}/api/prepare-download?${qs}`);
+  const response = await fetchWithRetry(
+    `${API_BASE}/api/prepare-download?${qs}`,
+    {},
+    null
+  );
   const data = await response.json();
 
   if (!response.ok || !data.jobId) {
@@ -137,7 +143,16 @@ export async function startDownloadJob(mediaUrl, formatId) {
  * @returns {function} - call to cancel polling
  */
 export function pollJobStatus(jobId, { onReady, onError, onPending }, intervalMs = 2000) {
+  const MAX_POLL_TIME = 5 * 60 * 1000; // 5 minutes max
+  const startTime = Date.now();
+
   const pollId = setInterval(async () => {
+    if (Date.now() - startTime > MAX_POLL_TIME) {
+      clearInterval(pollId);
+      onError('Download timed out after 5 minutes. Please try again.');
+      return;
+    }
+
     try {
       const res = await fetch(`${API_BASE}/api/download-status?jobId=${jobId}`);
       const data = await res.json();
@@ -157,7 +172,6 @@ export function pollJobStatus(jobId, { onReady, onError, onPending }, intervalMs
     }
   }, intervalMs);
 
-  // Return cancel function
   return () => clearInterval(pollId);
 }
 

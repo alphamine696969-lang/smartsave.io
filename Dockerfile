@@ -14,9 +14,8 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev
 
-# Copy app files
+# Copy app files (cookies are provided via YOUTUBE_COOKIES env var at runtime)
 COPY server.js .
-COPY cookies.txt .
 
 ENV PORT=3001
 CMD ["node", "server.js"]

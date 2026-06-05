@@ -4,6 +4,8 @@
 // Uses download-card, badge design system primitives.
 // ═══════════════════════════════════════════════════════════
 
+import { escapeHtml, escapeAttr } from './htmlUtils.js';
+
 /**
  * @param {{
  *   mediaData: object|null,
@@ -84,7 +86,7 @@ export function DownloadOptionsSection({ mediaData, activeTab = 'video' }) {
          role="tabpanel"
          aria-labelledby="tab-audio"
          class="download-options engine__format-panel"
-         ${activeTab !== 'audio' || !hasVideo ? '' : 'hidden'}
+         ${activeTab !== 'audio' && hasVideo ? 'hidden' : ''}
        >
          ${audioFormats.map((f, i) => formatCard(f, i)).join('')}
        </div>`
@@ -142,12 +144,4 @@ function formatBytes(bytes) {
   if (!bytes) return 'Unknown size';
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-}
-
-function escapeHtml(str) {
-  return (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-function escapeAttr(str) {
-  return (str || '').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 }

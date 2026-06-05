@@ -35,8 +35,8 @@ export function updateSEO({
   setMeta('property', 'og:description', ogDescription || description);
 
   // ── Twitter Card ──
-  setMeta('property', 'twitter:title', ogTitle || title);
-  setMeta('property', 'twitter:description', ogDescription || description);
+  setMeta('name', 'twitter:title', ogTitle || title);
+  setMeta('name', 'twitter:description', ogDescription || description);
 
   // ── Canonical URL + og:url + twitter:url ──
   if (canonicalPath) {
@@ -55,7 +55,7 @@ export function updateSEO({
     setMeta('property', 'og:url', fullUrl);
 
     // twitter:url
-    setMeta('property', 'twitter:url', fullUrl);
+    setMeta('name', 'twitter:url', fullUrl);
   }
 
   // ── JSON-LD Structured Data ──
@@ -67,7 +67,7 @@ export function updateSEO({
     const script = document.createElement('script');
     script.type = 'application/ld+json';
     script.id = 'seo-jsonld';
-    script.textContent = JSON.stringify(jsonLd);
+    script.textContent = JSON.stringify(jsonLd).replace(/</g, '\\u003c');
     document.head.appendChild(script);
   }
 }

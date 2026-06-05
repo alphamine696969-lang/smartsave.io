@@ -4,6 +4,8 @@
 // Does NOT replace the engine's internal ctx — supplements it.
 // ═══════════════════════════════════════════════════════════
 
+const _ALLOWED_KEYS = new Set(['currentPlatform', 'inputUrl', 'detectedPlatform', 'status', 'errorMessage']);
+
 const _store = {
   currentPlatform:  null,   // platformId of the active dedicated page (null = generic)
   inputUrl:         '',
@@ -14,7 +16,11 @@ const _store = {
 
   /** Merge patch into store and notify all subscribers */
   set(patch) {
-    Object.assign(this, patch);
+    for (const key of Object.keys(patch)) {
+      if (_ALLOWED_KEYS.has(key)) {
+        this[key] = patch[key];
+      }
+    }
     this._subscribers.forEach(fn => fn(this.snapshot()));
   },
 

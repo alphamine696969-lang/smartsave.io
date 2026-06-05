@@ -2,7 +2,14 @@
 // SmartSave.io — Privacy Policy Page
 // ═══════════════════════════════════════════════════════════
 
+let _privacyCleanup = null;
+
 export function renderPrivacy() {
+  if (_privacyCleanup) {
+    _privacyCleanup();
+    _privacyCleanup = null;
+  }
+
   setTimeout(() => {
     const links = document.querySelectorAll('.privacy-sidebar__link');
     const sections = document.querySelectorAll('.privacy-content h2[id]');
@@ -30,6 +37,8 @@ export function renderPrivacy() {
     }, { rootMargin: '-80px 0px -80% 0px' });
 
     sections.forEach(section => observer.observe(section));
+
+    _privacyCleanup = () => observer.disconnect();
   }, 200);
 
   return `

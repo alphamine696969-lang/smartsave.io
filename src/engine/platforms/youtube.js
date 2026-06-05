@@ -45,13 +45,16 @@ export function usePlatformHandler(url, onStateChange) {
     config: PlatformConfig,
     actions: {
       ...downloader.actions,
-      // Override fetch to add platform-specific pre-validation
       fetch() {
-        // YouTube-specific: reject channel/playlist root pages
         const { pattern, patternError } = PlatformConfig.validationRules;
         if (url && !pattern.test(url)) {
-          // Emit error via onStateChange without touching the state machine
-          // (the core engine will do the state transition on the actual fetch call)
+          onStateChange({
+            state: 'INVALID',
+            error: patternError,
+            mediaData: null,
+            progress: null,
+          });
+          return;
         }
         return downloader.actions.fetch();
       },

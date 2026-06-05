@@ -98,6 +98,7 @@ export function useDownloader(initialUrl, onStateChange) {
     setProgress('Connecting to platform…', 25);
 
     // — FETCHING phase —
+    let timers = [];
     try {
       dispatch(Events.FETCH_START);
 
@@ -108,7 +109,7 @@ export function useDownloader(initialUrl, onStateChange) {
       ];
 
       // Simulate progress milestones while the real API request is in flight
-      const timers = milestones.map(m =>
+      timers = milestones.map(m =>
         setTimeout(() => {
           if (ctx.state === States.FETCHING) setProgress(m.message, m.percent);
         }, m.at)
@@ -126,6 +127,7 @@ export function useDownloader(initialUrl, onStateChange) {
       setProgress('Ready!', 100);
 
     } catch (err) {
+      timers.forEach(clearTimeout);
       dispatch(Events.FETCH_FAIL, { error: err.message });
     }
   }
@@ -141,12 +143,6 @@ export function useDownloader(initialUrl, onStateChange) {
 
     dispatch(Events.DOWNLOAD_START, { error: null });
     setProgress('Starting download job…', null);
-
-    // Open a pop-under ad (matches existing behaviour from download.js)
-    try {
-      const adWindow = window.open('https://google.com/search?q=Special+Advertisement', '_blank');
-      if (adWindow) { adWindow.blur(); window.focus(); }
-    } catch { /* Ad blocker present — proceed silently */ }
 
     try {
       const jobId = await startDownloadJob(ctx.parseResult.normalizedUrl, formatId);

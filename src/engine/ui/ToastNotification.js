@@ -4,6 +4,8 @@
 // Uses ONLY existing CSS custom properties — zero global conflicts.
 // ═══════════════════════════════════════════════════════════
 
+import { escapeHtml } from './htmlUtils.js';
+
 const ROOT_ID = 'ss-toast-root';
 let _timer   = null;
 let _counter = 0;
@@ -35,17 +37,16 @@ export function showToast(message, type = 'info', duration = 4200) {
   root.innerHTML = `
     <div class="ss-toast ss-toast--${type}" id="ss-toast-${id}" role="alert" aria-live="assertive">
       <span class="ss-toast__icon">${SVG[type] || SVG.info}</span>
-      <span class="ss-toast__msg">${esc(message)}</span>
+      <span class="ss-toast__msg">${escapeHtml(message)}</span>
       <button
         class="ss-toast__close"
         aria-label="Dismiss notification"
-        onclick="
-          var t=document.getElementById('ss-toast-${id}');
-          if(t){t.classList.add('ss-toast--exit');}
-        "
+        data-toast-id="${id}"
       >✕</button>
     </div>
   `;
+
+  root.querySelector(`[data-toast-id="${id}"]`)?.addEventListener('click', () => dismissToast(id));
 
   // Trigger enter animation on next paint
   requestAnimationFrame(() => {
@@ -64,8 +65,4 @@ function dismissToast(id) {
     const root = document.getElementById(ROOT_ID);
     if (root) root.innerHTML = '';
   }, 380);
-}
-
-function esc(str) {
-  return (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }

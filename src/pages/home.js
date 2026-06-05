@@ -122,6 +122,12 @@ export function renderHome() {
         }
       });
     });
+
+    // CTA button — focus the hero input
+    document.getElementById('cta-start-btn')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      document.getElementById('hero-url-input')?.focus();
+    });
   }, 60);
 
   const platformCardsHtml = PLATFORMS.map(p => `
@@ -286,7 +292,7 @@ export function renderHome() {
           <div class="cta-banner__content">
             <h2 class="cta-banner__title">Ready to Download?</h2>
             <p class="cta-banner__desc">Join millions of users who trust SmartSave.io for fast, free, and secure media downloads.</p>
-            <a href="#/" class="cta-banner__btn" onclick="document.getElementById('hero-url-input')?.focus()">
+            <a href="#/" class="cta-banner__btn" id="cta-start-btn">
               Start Now — It's Free
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
             </a>

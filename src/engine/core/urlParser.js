@@ -122,18 +122,3 @@ export function parseUrl(raw) {
     error: null,
   };
 }
-
-/**
- * Quick synchronous check — is this URL well-formed?
- * Used for real-time input validation (no platform check needed).
- */
-export function isValidUrl(raw) {
-  if (!raw?.trim()) return false;
-  try {
-    const toTry = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
-    new URL(toTry);
-    return true;
-  } catch {
-    return false;
-  }
-}
