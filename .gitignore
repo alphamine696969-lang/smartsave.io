@@ -20,7 +20,6 @@ ffmpeg.exe
 .env
 .env.local
 .env.*.local
-.env.production
 
 # Sensitive files
 cookies.txt
