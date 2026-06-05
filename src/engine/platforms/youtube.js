@@ -49,7 +49,7 @@ export function usePlatformHandler(url, onStateChange) {
         const { pattern, patternError } = PlatformConfig.validationRules;
         if (url && !pattern.test(url)) {
           onStateChange({
-            state: 'INVALID',
+            state: 'invalid',
             error: patternError,
             mediaData: null,
             progress: null,
