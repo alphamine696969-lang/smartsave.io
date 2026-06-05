@@ -7,14 +7,14 @@
 // Reads from Vite env var — same as the existing download.js
 const API_BASE = import.meta.env.VITE_API_URL || 'https://smartsave-io.onrender.com';
 
-/** Default timeout per request (ms) — matches legacy behaviour */
-const DEFAULT_TIMEOUT = 120_000;
+/** Default timeout per request (ms) — keeps total wait under ~45s */
+const DEFAULT_TIMEOUT = 30_000;
 
 /** Max retries on network-level failures (AbortError / TypeError) */
-const MAX_RETRIES = 2;
+const MAX_RETRIES = 1;
 
 /** Delay between retries (ms) — gives Render cold-start time to wake up */
-const RETRY_DELAY = 3_000;
+const RETRY_DELAY = 2_000;
 
 /**
  * Internal fetch wrapper with timeout + retry logic.

@@ -251,7 +251,8 @@ app.post('/api/info', rateLimit, async (req, res) => {
     ];
 
     const isYT = isYouTubeUrl(url);
-    const clients = isYT ? ['ios', 'web', 'android', 'mweb', 'tv_embedded'] : [null];
+    // Try 'web' first (fastest path based on observed behavior), then fallbacks
+    const clients = isYT ? ['web', 'ios', 'android', 'tv_embedded'] : [null];
 
     let info = null;
     let lastErr = null;
@@ -265,7 +266,7 @@ app.post('/api/info', rateLimit, async (req, res) => {
 
         try {
             const { stdout } = await execFileAsync(YT_DLP_PATH, args, {
-                timeout: 90_000,
+                timeout: 25_000,
                 maxBuffer: 20 * 1024 * 1024,
             });
             try {
@@ -280,16 +281,17 @@ app.post('/api/info', rateLimit, async (req, res) => {
             lastErr = { originalError: err, stderr };
             const isBotBlock = stderr.includes('Sign in') || stderr.includes('login') || stderr.includes('bot') || stderr.includes('confirm') || stderr.includes('not available in your country');
             const isFormatError = stderr.includes('Requested format is not available') || stderr.includes('format is not available');
-            // Retry next client for bot blocks OR format errors
-            if (!isBotBlock && !isFormatError) break;
+            const isTimeout = err.killed || stderr.includes('timeout') || stderr.includes('ETIMEDOUT');
+            // Retry next client for bot blocks, format errors, or timeouts
+            if (!isBotBlock && !isFormatError && !isTimeout) break;
         }
     }
 
-    // If all clients failed with format errors, try once more without extractor args
+    // If all clients failed, try once more without extractor args
     if (!info && isYT) {
         try {
             const { stdout } = await execFileAsync(YT_DLP_PATH, [...baseArgs, url], {
-                timeout: 90_000,
+                timeout: 25_000,
                 maxBuffer: 20 * 1024 * 1024,
             });
             try {
