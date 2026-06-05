@@ -278,9 +278,25 @@ app.post('/api/info', rateLimit, async (req, res) => {
         } catch (err) {
             const stderr = (err.stderr || err.message || '').trim();
             lastErr = { originalError: err, stderr };
-            // Only try more clients for bot/geo-block errors
             const isBotBlock = stderr.includes('Sign in') || stderr.includes('login') || stderr.includes('bot') || stderr.includes('confirm') || stderr.includes('not available in your country');
-            if (!isBotBlock) break;
+            const isFormatError = stderr.includes('Requested format is not available') || stderr.includes('format is not available');
+            // Retry next client for bot blocks OR format errors
+            if (!isBotBlock && !isFormatError) break;
+        }
+    }
+
+    // If all clients failed with format errors, try once more without extractor args
+    if (!info && isYT) {
+        try {
+            const { stdout } = await execFileAsync(YT_DLP_PATH, [...baseArgs, url], {
+                timeout: 90_000,
+                maxBuffer: 20 * 1024 * 1024,
+            });
+            try {
+                info = JSON.parse(stdout);
+            } catch { /* still bad */ }
+        } catch (err) {
+            lastErr = { originalError: err, stderr: (err.stderr || err.message || '').trim() };
         }
     }
 
@@ -292,6 +308,9 @@ app.post('/api/info', rateLimit, async (req, res) => {
         }
         if (stderr.includes('Sign in') || stderr.includes('login') || stderr.includes('bot') || stderr.includes('confirm')) {
             return res.status(403).json({ error: 'YouTube is temporarily blocking our server. Please try again in a few minutes.' });
+        }
+        if (stderr.includes('Requested format is not available') || stderr.includes('format is not available')) {
+            return res.status(500).json({ error: 'This video has restricted formats. Please try again in a few minutes — YouTube is limiting our server.' });
         }
         if (stderr.includes('Private video') || stderr.includes('private')) {
             return res.status(403).json({ error: 'This video is private and cannot be downloaded.' });
