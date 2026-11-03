@@ -124,13 +124,19 @@ export async function fetchMediaInfo(mediaUrl, onStatusUpdate) {
  *
  * @param {string} mediaUrl
  * @param {string} formatId
+ * @param {string|null} [client] - player client reported by /api/info
  * @returns {Promise<string>} jobId
  */
-export async function startDownloadJob(mediaUrl, formatId) {
-  const qs = new URLSearchParams({
+export async function startDownloadJob(mediaUrl, formatId, client = null) {
+  const params = {
     url: mediaUrl,
     format_id: formatId,
-  });
+  };
+  // Reuse the exact client that produced this format ID. Without it the
+  // server can fall back to 360p-only clients and the picked quality fails.
+  if (client && client !== 'default') params.client = client;
+
+  const qs = new URLSearchParams(params);
 
   const response = await fetchWithRetry(
     `${API_BASE}/api/prepare-download?${qs}`,

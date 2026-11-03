@@ -152,7 +152,11 @@ export function useDownloader(initialUrl, onStateChange) {
     setProgress('Starting download job…', null);
 
     try {
-      const jobId = await startDownloadJob(ctx.parseResult.normalizedUrl, formatId);
+      const jobId = await startDownloadJob(
+        ctx.parseResult.normalizedUrl,
+        formatId,
+        ctx.mediaData?.clientUsed || null
+      );
 
       setProgress('Processing your download…', null);
 

@@ -75,28 +75,100 @@ const FFMPEG_DIR = path.dirname(FFMPEG_PATH);
 
 const COOKIES_PATH = path.join(os.tmpdir(), 'yt-cookies.txt');
 
-// Write cookies from env var to file (set YOUTUBE_COOKIES in Render env)
-function setupCookies() {
-    const cookiesEnv = process.env.YOUTUBE_COOKIES;
-    if (cookiesEnv) {
+let cookiesReady = false;
+let cookieCount = 0;
+
+/**
+ * Normalise cookie content into a valid Netscape cookie file.
+ *
+ * Accepts raw Netscape text or a base64-encoded copy (useful on hosts whose
+ * env-var UI mangles newlines). Returns `{ text, rows }` or null if unusable.
+ *
+ * @param {string} raw
+ * @returns {{ text: string, rows: number }|null}
+ */
+function normalizeCookies(raw) {
+    let text = String(raw || '').trim();
+    if (!text) return null;
+
+    // Base64 fallback: no tabs and only base64 alphabet characters.
+    if (!text.includes('\t') && /^[A-Za-z0-9+/=\r\n]+$/.test(text)) {
         try {
-            fs.writeFileSync(COOKIES_PATH, cookiesEnv, 'utf8');
+            const decoded = Buffer.from(text, 'base64').toString('utf8');
+            if (decoded.includes('\t')) text = decoded.trim();
+        } catch { /* not base64 — keep the original */ }
+    }
+
+    text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    if (!/^#\s*(Netscape|HTTP Cookie File)/i.test(text)) {
+        text = '# Netscape HTTP Cookie File\n' + text;
+    }
+    if (!text.endsWith('\n')) text += '\n';
+
+    // Count real cookie rows: Netscape format is 7 tab-separated fields.
+    // `#HttpOnly_` prefixed rows are real cookies, not comments.
+    const rows = text.split('\n').filter(line => {
+        const trimmed = line.trim();
+        if (!trimmed) return false;
+        if (trimmed.startsWith('#') && !trimmed.startsWith('#HttpOnly_')) return false;
+        return line.split('\t').length >= 7;
+    }).length;
+
+    return rows > 0 ? { text, rows } : null;
+}
+
+// Write cookies from env var to file. Supports raw Netscape text,
+// base64 (YOUTUBE_COOKIES_BASE64 / base64 in YOUTUBE_COOKIES) or cookies.txt.
+function setupCookies() {
+    const candidates = [
+        process.env.YOUTUBE_COOKIES,
+        process.env.YOUTUBE_COOKIES_BASE64,
+        process.env.YT_COOKIES,
+    ];
+
+    for (const raw of candidates) {
+        if (!raw) continue;
+
+        // Allow the env var to point at a mounted cookie file instead of
+        // containing the cookies inline.
+        let content = raw;
+        if (!raw.includes('\t') && raw.length < 4096 && fs.existsSync(raw)) {
+            try { content = fs.readFileSync(raw, 'utf8'); } catch { /* keep raw */ }
+        }
+
+        const normalized = normalizeCookies(content);
+        if (!normalized) continue;
+        try {
+            fs.writeFileSync(COOKIES_PATH, normalized.text, { encoding: 'utf8', mode: 0o600 });
+            cookiesReady = true;
+            cookieCount = normalized.rows;
             return true;
         } catch (err) {
             console.error('Failed to write cookies:', err.message);
         }
     }
-    // Also check for a cookies.txt file in the app directory
+
+    // Also check for a cookies.txt file in the app directory.
     const localCookies = path.join(__dirname, 'cookies.txt');
     if (fs.existsSync(localCookies)) {
-        return true;
+        try {
+            const normalized = normalizeCookies(fs.readFileSync(localCookies, 'utf8'));
+            if (normalized) {
+                cookiesReady = true;
+                cookieCount = normalized.rows;
+                return true;
+            }
+        } catch { /* ignore unreadable file */ }
     }
+
+    cookiesReady = false;
+    cookieCount = 0;
     return false;
 }
 
 // Build common yt-dlp args with cookies if available
 function getCookieArgs() {
-    if (fs.existsSync(COOKIES_PATH)) {
+    if (cookiesReady && fs.existsSync(COOKIES_PATH)) {
         return ['--cookies', COOKIES_PATH];
     }
     const localCookies = path.join(__dirname, 'cookies.txt');
@@ -104,6 +176,30 @@ function getCookieArgs() {
         return ['--cookies', localCookies];
     }
     return [];
+}
+
+/**
+ * yt-dlp can use a JavaScript runtime to solve YouTube's JS challenges, which
+ * some player clients require. We already run on Node, so point yt-dlp at the
+ * exact binary instead of adding deno. The flag only exists on recent yt-dlp,
+ * so probe --help once and fall back to no args on older builds.
+ */
+let _jsRuntimeArgs = null;
+function getJsRuntimeArgs() {
+    if (_jsRuntimeArgs !== null) return _jsRuntimeArgs;
+    try {
+        const help = execFileSync(YT_DLP_PATH, ['--help'], {
+            encoding: 'utf8',
+            timeout: 10_000,
+            maxBuffer: 4 * 1024 * 1024,
+        });
+        _jsRuntimeArgs = help.includes('--js-runtimes')
+            ? ['--js-runtimes', `node:${process.execPath}`]
+            : [];
+    } catch {
+        _jsRuntimeArgs = [];
+    }
+    return _jsRuntimeArgs;
 }
 
 // ══════════════════════════════════════════════════════
@@ -226,12 +322,27 @@ function checkYtDlp() {
 
 // `null` means "let yt-dlp pick its default player client". That path is both
 // the fastest and the most complete (it exposes every resolution + audio-only
-// streams). Forcing `web`/`android` makes YouTube return a degraded list that
-// only contains the muxed 360p format — which is why "Best" used to download
-// 360p instead of 4K. Explicit clients are fallbacks only.
-const YOUTUBE_CLIENTS = [null, 'tv_embedded', 'android', 'ios', 'web', 'mweb'];
-const YOUTUBE_RETRY_CLIENTS = ['tv_embedded', 'android', 'ios', 'web', 'mweb', null];
+// streams). `tv_embedded` is the reliable fallback that also exposes 4K.
+// `web`/`mweb` are deliberately excluded from downloads: they only expose the
+// muxed 360p stream, so retrying with them would silently downgrade the file.
+// `android`/`ios` are last resorts for clients that fall back to 360p.
+const YOUTUBE_INFO_CLIENTS = [null, 'tv_embedded', 'android'];
+const YOUTUBE_DOWNLOAD_CLIENTS = [null, 'tv_embedded', 'android', 'ios'];
+const YOUTUBE_DOWNLOAD_RETRY_CLIENTS = ['tv_embedded', null, 'android', 'ios'];
 const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
+/**
+ * Build `--extractor-args` for a YouTube player client.
+ * `null` → default extraction (no override).
+ *
+ * @param {string|null|undefined} client
+ * @returns {string[]}
+ */
+function clientArgs(client) {
+    return client
+        ? ['--extractor-args', `youtube:player_client=${client}`]
+        : [];
+}
 
 function isYouTubeUrl(url) {
     const l = url.toLowerCase();
@@ -265,7 +376,7 @@ app.post('/api/info', rateLimit, async (req, res) => {
     // Try yt-dlp's default client first (full format list), then fallbacks.
     // Keep this list short: when YouTube blocks a video every extra client adds
     // its full timeout to the user's wait, and the UI just sits there.
-    const clients = isYT ? [null, 'tv_embedded', 'android'] : [null];
+    const clients = isYT ? YOUTUBE_INFO_CLIENTS : [null];
 
     // Hard wall-clock budget for the whole request. Previously each of 5
     // clients got 25s *plus* a redundant 25s "no extractor args" fallback, so
@@ -276,6 +387,7 @@ app.post('/api/info', rateLimit, async (req, res) => {
 
     let info = null;
     let lastErr = null;
+    let usedClient = null;
     let budgetExhausted = false;
 
     for (const client of clients) {
@@ -287,7 +399,9 @@ app.post('/api/info', rateLimit, async (req, res) => {
 
         const args = [
             ...baseArgs,
-            ...(client ? ['--extractor-args', `youtube:player_client=${client}`, '--user-agent', BROWSER_UA, '--geo-bypass'] : []),
+            ...getJsRuntimeArgs(),
+            ...clientArgs(client),
+            ...(client ? ['--user-agent', BROWSER_UA, '--geo-bypass'] : []),
             url,
         ];
 
@@ -299,6 +413,7 @@ app.post('/api/info', rateLimit, async (req, res) => {
             });
             try {
                 info = JSON.parse(stdout);
+                usedClient = client || 'default';
             } catch {
                 lastErr = { stderr: 'Response too large or corrupt. Try a different URL.' };
                 break;
@@ -326,7 +441,10 @@ app.post('/api/info', rateLimit, async (req, res) => {
             });
         }
         if (stderr.includes('Sign in') || stderr.includes('login') || stderr.includes('bot') || stderr.includes('confirm')) {
-            return res.status(403).json({ error: 'YouTube is temporarily blocking our server. Please try again in a few minutes.' });
+            return res.status(403).json({
+                error: 'YouTube asked our server to verify it isn\'t a bot for this video. This usually clears up after a few minutes — please try again, or try a different video.',
+                reason: 'bot_check',
+            });
         }
         if (stderr.includes('Requested format is not available') || stderr.includes('format is not available')) {
             return res.status(500).json({ error: 'This video has restricted formats. Please try again in a few minutes — YouTube is limiting our server.' });
@@ -455,6 +573,9 @@ app.post('/api/info', rateLimit, async (req, res) => {
             height: info.height || null,
             videoFormats,
             audioFormats,
+            // Which player client produced these format IDs. The download
+            // worker uses the same one first so format IDs always match.
+            clientUsed: usedClient,
         }
     });
 });
@@ -465,7 +586,7 @@ app.post('/api/info', rateLimit, async (req, res) => {
 
 
 app.get('/api/prepare-download', rateLimit, (req, res) => {
-    const { url, format_id } = req.query;
+    const { url, format_id, client: clientParam } = req.query;
 
     if (!url || !isValidUrl(url)) {
         return res.status(400).json({ error: 'Invalid URL.' });
@@ -512,18 +633,23 @@ app.get('/api/prepare-download', rateLimit, (req, res) => {
 
         // For YouTube: try multiple clients if needed
         if (isYouTubeUrl(url)) {
-            const clients = isRetry ? YOUTUBE_RETRY_CLIENTS : YOUTUBE_CLIENTS;
+            const preferred = typeof clientParam === 'string' && clientParam && clientParam !== 'default'
+                ? clientParam
+                : null;
+            const baseClients = isRetry ? YOUTUBE_DOWNLOAD_RETRY_CLIENTS : YOUTUBE_DOWNLOAD_CLIENTS;
+            // Reuse the client that produced the format IDs from /api/info so a
+            // specific resolution actually exists when we download it.
+            const clients = preferred
+                ? [preferred, ...baseClients.filter(c => c !== preferred)]
+                : baseClients;
 
             let lastErr = null;
             for (const client of clients) {
-                // client === null → default extraction (no --extractor-args)
-                const clientArgs = client
-                    ? ['--extractor-args', `youtube:player_client=${client}`]
-                    : [];
                 const args = [
                     '-f', formatArg,
                     ...baseArgs,
-                    ...clientArgs,
+                    ...getJsRuntimeArgs(),
+                    ...clientArgs(client),
                     '--user-agent', BROWSER_UA,
                     '--geo-bypass',
                     url,
@@ -598,7 +724,7 @@ app.get('/api/prepare-download', rateLimit, (req, res) => {
                 const stderr = lastErr?.stderr || '';
                 job.status = 'error';
                 if (stderr.includes('Sign in') || stderr.includes('bot') || stderr.includes('confirm')) {
-                    job.error = 'YouTube is blocking this download. Please try again in a few minutes or try a different video.';
+                    job.error = 'YouTube asked our server to verify it isn\'t a bot. Please try again in a few minutes, or try a different video.';
                 } else if (stderr.includes('HTTP Error 403') || stderr.includes('429')) {
                     job.error = 'YouTube rate-limited this request. Please wait a few minutes and try again.';
                 } else {
@@ -797,6 +923,9 @@ app.get('/api/health', (req, res) => {
         ffmpegReady: ffmpegVersion !== null,
         ytDlpVersion: ytDlpVersion || 'NOT FOUND',
         ffmpegVersion: ffmpegVersion || 'NOT FOUND',
+        // Useful for verifying a deploy actually picked up YOUTUBE_COOKIES.
+        cookiesReady,
+        cookieCount,
         timestamp: new Date().toISOString()
     });
 });
@@ -891,6 +1020,8 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     ytDlpVersion = testBinary('yt-dlp', YT_DLP_PATH, '--version');
     ffmpegVersion = testBinary('ffmpeg', FFMPEG_PATH, '-version');
     const hasCookies = setupCookies();
+    // Probe once at boot so the first request isn't delayed by --help.
+    const jsArgs = getJsRuntimeArgs();
 
     if (!ytDlpVersion || !ffmpegVersion) {
         console.log('');
@@ -898,7 +1029,12 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     }
     if (!hasCookies) {
         console.log('  ⚠️  No YouTube cookies — bot detection may block downloads.');
+        console.log('      Set YOUTUBE_COOKIES (raw Netscape text) or');
+        console.log('      YOUTUBE_COOKIES_BASE64 in the host environment.');
+    } else {
+        console.log(`  ✅  YouTube cookies loaded — ${cookieCount} cookie(s).`);
     }
+    console.log(`  🧠  JS runtime for yt-dlp: ${jsArgs.length ? jsArgs[1] : 'not supported by this yt-dlp build'}`);
 
     console.log('═══════════════════════════════════════════════════');
     console.log('');
