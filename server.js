@@ -19,6 +19,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Render (and most PaaS hosts) sit behind a proxy. Without trusting the
+// forwarding headers, req.ip is the proxy's address for every visitor — which
+// turns the per-IP rate limiter into a single global bucket. Trust exactly
+// one hop (the platform's load balancer).
+app.set('trust proxy', 1);
+
 // ══════════════════════════════════════════════════════
 // Binary Paths — Linux-only (Render Docker)
 // ══════════════════════════════════════════════════════
@@ -218,8 +224,13 @@ function checkYtDlp() {
 // YouTube Multi-Client Retry Helper
 // ═════════════════════════════════════════════════════════
 
-const YOUTUBE_CLIENTS = ['web', 'ios', 'android', 'mweb', 'tv_embedded'];
-const YOUTUBE_RETRY_CLIENTS = ['ios', 'android', 'mweb', 'tv_embedded', 'web'];
+// `null` means "let yt-dlp pick its default player client". That path is both
+// the fastest and the most complete (it exposes every resolution + audio-only
+// streams). Forcing `web`/`android` makes YouTube return a degraded list that
+// only contains the muxed 360p format — which is why "Best" used to download
+// 360p instead of 4K. Explicit clients are fallbacks only.
+const YOUTUBE_CLIENTS = [null, 'tv_embedded', 'android', 'ios', 'web', 'mweb'];
+const YOUTUBE_RETRY_CLIENTS = ['tv_embedded', 'android', 'ios', 'web', 'mweb', null];
 const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
 function isYouTubeUrl(url) {
@@ -251,8 +262,8 @@ app.post('/api/info', rateLimit, async (req, res) => {
     ];
 
     const isYT = isYouTubeUrl(url);
-    // Try 'web' first (fastest path based on observed behavior), then fallbacks
-    const clients = isYT ? ['web', 'ios', 'android', 'tv_embedded'] : [null];
+    // Try yt-dlp's default client first (full format list), then fallbacks.
+    const clients = isYT ? [null, 'tv_embedded', 'android', 'ios', 'web'] : [null];
 
     let info = null;
     let lastErr = null;
@@ -331,8 +342,25 @@ app.post('/api/info', rateLimit, async (req, res) => {
     // ── Parse formats ──────────────────────────────────
     const videoFormats = [];
     const audioFormats = [];
-    const seenHeights = new Set();
+    const bestByHeight = new Map();   // height → best candidate (see score)
     const seenAudioKeys = new Set();
+
+    // Prefer reliable, directly downloadable streams over HLS manifests, and
+    // MP4/H.264 over less-compatible codecs when several formats share a height.
+    function formatScore(f, hasAudio) {
+        const proto = String(f.protocol || '').toLowerCase();
+        const ext = String(f.ext || '').toLowerCase();
+        const vcodec = String(f.vcodec || '').toLowerCase();
+        let score = 0;
+        if (proto.startsWith('http')) score += 100;   // direct HTTPS stream
+        else if (proto.includes('m3u8')) score += 0;  // HLS: slower, less reliable
+        if (ext === 'mp4') score += 20;
+        else if (ext === 'webm') score += 10;
+        if (vcodec.startsWith('avc')) score += 10;    // H.264 plays everywhere
+        if (hasAudio) score += 5;                     // already muxed
+        if (f.filesize || f.filesize_approx) score += 1;
+        return score;
+    }
 
     for (const f of (info.formats || [])) {
         if (!f.format_id) continue;
@@ -343,24 +371,14 @@ app.post('/api/info', rateLimit, async (req, res) => {
         if (hasVideo) {
             const height = f.height || 0;
             if (height < 144) continue;
-            if (seenHeights.has(height)) continue;
-            seenHeights.add(height);
-            // Video-only streams: attach best audio
-            const formatId = hasAudio ? f.format_id : `${f.format_id}+bestaudio[ext=m4a]/bestaudio`;
-            const fpsLabel = f.fps && f.fps > 30 ? ` ${f.fps}fps` : '';
-            const ext = (f.ext || 'mp4').toUpperCase();
-            videoFormats.push({
-                type: 'video',
-                format_id: formatId,
-                ext: f.ext || 'mp4',
-                quality: `${height}p${fpsLabel}`,
-                height,
-                fps: f.fps || null,
-                filesize: size,
-                label: `${ext} — ${height}p${fpsLabel}`,
-                note: f.format_note || '',
-                hasAudio: true,
-            });
+
+            // Keep the best-scoring format for each resolution instead of
+            // whichever one happens to come first in yt-dlp's list.
+            const candidate = { f, hasAudio, size, score: formatScore(f, hasAudio) };
+            const current = bestByHeight.get(height);
+            if (!current || candidate.score > current.score) {
+                bestByHeight.set(height, candidate);
+            }
         } else if (hasAudio && !hasVideo) {
             const abr = Math.round(f.abr || f.tbr || 0);
             if (!abr) continue;
@@ -380,6 +398,26 @@ app.post('/api/info', rateLimit, async (req, res) => {
                 hasAudio: true,
             });
         }
+    }
+
+    // Build one downloadable card per resolution from the best candidates.
+    for (const [height, { f, hasAudio, size }] of bestByHeight.entries()) {
+        // Video-only streams: attach best audio
+        const formatId = hasAudio ? f.format_id : `${f.format_id}+bestaudio[ext=m4a]/bestaudio`;
+        const fpsLabel = f.fps && f.fps > 30 ? ` ${f.fps}fps` : '';
+        const ext = (f.ext || 'mp4').toUpperCase();
+        videoFormats.push({
+            type: 'video',
+            format_id: formatId,
+            ext: f.ext || 'mp4',
+            quality: `${height}p${fpsLabel}`,
+            height,
+            fps: f.fps || null,
+            filesize: size,
+            label: `${ext} — ${height}p${fpsLabel}`,
+            note: f.format_note || '',
+            hasAudio: true,
+        });
     }
 
     videoFormats.sort((a, b) => b.height - a.height);
@@ -472,10 +510,14 @@ app.get('/api/prepare-download', rateLimit, (req, res) => {
 
             let lastErr = null;
             for (const client of clients) {
+                // client === null → default extraction (no --extractor-args)
+                const clientArgs = client
+                    ? ['--extractor-args', `youtube:player_client=${client}`]
+                    : [];
                 const args = [
                     '-f', formatArg,
                     ...baseArgs,
-                    '--extractor-args', `youtube:player_client=${client}`,
+                    ...clientArgs,
                     '--user-agent', BROWSER_UA,
                     '--geo-bypass',
                     url,
@@ -623,13 +665,56 @@ app.get('/api/prepare-download', rateLimit, (req, res) => {
 
 app.get('/api/download-status', (req, res) => {
     const job = downloadJobs.get(req.query.jobId);
-    if (!job) return res.status(404).json({ error: 'Job not found.' });
-    res.json({ status: job.status, error: job.error });
+    if (!job) return res.status(404).json({ error: 'Job not found. Please start a new download.' });
+    res.json({
+        status: job.status,
+        error: job.error,
+        filename: job.file ? path.basename(job.file) : null,
+    });
 });
 
 // ═════════════════════════════════════════════════════════
 // API: Fetch Downloaded File
 // ═════════════════════════════════════════════════════════
+
+/**
+ * Build a valid Content-Disposition header for an arbitrary filename.
+ *
+ * HTTP header values are ISO-8859-1, so putting a raw Unicode title
+ * (Japanese, Arabic, emoji, accents…) into the header makes Node throw
+ * `ERR_INVALID_CHAR` and the whole download fails with a 500. We send:
+ *   - `filename="..."`      → ASCII-only fallback for legacy clients
+ *   - `filename*=UTF-8''...`→ RFC 5987 encoded real name for modern clients
+ *
+ * @param {string} filename
+ * @returns {string}
+ */
+function buildContentDisposition(filename) {
+    // Strip any directory components and control characters.
+    const base = String(filename || 'download')
+        .split(/[\\/]/)
+        .pop()
+        .replace(/[\r\n\0]/g, '')
+        .trim() || 'download';
+
+    // ASCII fallback — keep it header-safe and reasonably short.
+    let fallback = base
+        .replace(/[^\x20-\x7e]/g, '_')   // non-ASCII → _
+        .replace(/["\\]/g, '_');         // quote/backslash would break the header
+    if (fallback.length > 180) {
+        const ext = path.extname(fallback).slice(0, 10);
+        fallback = fallback.slice(0, 170 - ext.length) + ext;
+    }
+
+    // RFC 5987 percent-encoding. encodeURIComponent misses ' ( ) ! * which
+    // are not permitted inside an ext-value token.
+    const encoded = encodeURIComponent(base).replace(
+        /['()!*]/g,
+        (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase()
+    );
+
+    return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
+}
 
 app.get('/api/download', (req, res) => {
     try {
@@ -660,7 +745,7 @@ app.get('/api/download', (req, res) => {
             return res.status(500).json({ error: 'Downloaded file is empty. Please try again.' });
         }
 
-        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.setHeader('Content-Disposition', buildContentDisposition(filename));
         res.setHeader('Content-Type', 'application/octet-stream');
         res.setHeader('Content-Length', stat.size);
 

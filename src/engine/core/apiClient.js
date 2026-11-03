@@ -120,10 +120,15 @@ export async function startDownloadJob(mediaUrl, formatId) {
     {},
     null
   );
-  const data = await response.json();
+
+  // The server may return an HTML error page (proxy/5xx), so never assume JSON.
+  const data = await response.json().catch(() => ({}));
 
   if (!response.ok || !data.jobId) {
-    throw new ApiError(data.error || 'Failed to start download job', response.status);
+    throw new ApiError(
+      data.error || `Failed to start download job (${response.status})`,
+      response.status
+    );
   }
 
   return data.jobId;
@@ -143,48 +148,85 @@ export async function startDownloadJob(mediaUrl, formatId) {
  * @returns {function} - call to cancel polling
  */
 export function pollJobStatus(jobId, { onReady, onError, onPending }, intervalMs = 2000) {
-  const MAX_POLL_TIME = 5 * 60 * 1000; // 5 minutes max
+  // Merging a 4K video + audio can legitimately take a while, so allow more
+  // than five minutes before giving up.
+  const MAX_POLL_TIME = 10 * 60 * 1000; // 10 minutes max
   const startTime = Date.now();
+  let stopped = false;
+
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(pollId);
+  };
 
   const pollId = setInterval(async () => {
+    if (stopped) return;
+
     if (Date.now() - startTime > MAX_POLL_TIME) {
-      clearInterval(pollId);
-      onError('Download timed out after 5 minutes. Please try again.');
+      stop();
+      onError('Download timed out. Please try again.');
       return;
     }
 
     try {
-      const res = await fetch(`${API_BASE}/api/download-status?jobId=${jobId}`);
-      const data = await res.json();
+      const res = await fetch(
+        `${API_BASE}/api/download-status?jobId=${encodeURIComponent(jobId)}`,
+        { cache: 'no-store' }
+      );
+      const data = await res.json().catch(() => ({}));
+
+      // A 404 means the job is gone (server restart / expired). Anything else
+      // that is not OK is transient, so keep polling.
+      if (!res.ok) {
+        if (res.status === 404) {
+          stop();
+          onError(data.error || 'This download session expired. Please start a new download.');
+          return;
+        }
+        onPending?.();
+        return;
+      }
 
       if (data.status === 'ready') {
-        clearInterval(pollId);
-        onReady(`${API_BASE}/api/download?jobId=${jobId}`);
+        stop();
+        onReady(
+          `${API_BASE}/api/download?jobId=${encodeURIComponent(jobId)}`,
+          data.filename || null
+        );
       } else if (data.status === 'error') {
-        clearInterval(pollId);
+        stop();
         onError(data.error || 'Download failed during processing.');
       } else {
         onPending?.();
       }
     } catch (err) {
-      clearInterval(pollId);
-      onError(err.message || 'Lost connection while monitoring download.');
+      // One dropped request shouldn't kill the download — keep trying until
+      // the overall timeout is reached.
+      onPending?.();
     }
   }, intervalMs);
 
-  return () => clearInterval(pollId);
+  return stop;
 }
 
 /**
  * Trigger a browser file download from a URL.
- * Creates and clicks a hidden <a> element — same technique as legacy download.js.
+ * Creates and clicks a hidden <a> element.
+ *
+ * The backend sends a Content-Disposition header with the real filename.
+ * We only set the `download` attribute when we actually know the name —
+ * setting `download=""` makes same-origin browsers ignore the header and
+ * save the file as "download" (no extension).
  *
  * @param {string} downloadUrl
+ * @param {string|null} [filename]
  */
-export function triggerBrowserDownload(downloadUrl) {
+export function triggerBrowserDownload(downloadUrl, filename = null) {
   const a = document.createElement('a');
   a.href = downloadUrl;
-  a.download = '';
+  if (filename) a.download = filename;
+  a.rel = 'noopener';
   a.style.display = 'none';
   document.body.appendChild(a);
   a.click();

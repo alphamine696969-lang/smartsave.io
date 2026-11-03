@@ -153,8 +153,8 @@ export function useDownloader(initialUrl, onStateChange) {
       const cancelFn = pollJobStatus(
         jobId,
         {
-          onReady: (downloadUrl) => {
-            triggerBrowserDownload(downloadUrl);
+          onReady: (downloadUrl, filename) => {
+            triggerBrowserDownload(downloadUrl, filename);
             dispatch(Events.DOWNLOAD_OK, { error: null });
             setProgress('Downloaded!', 100);
           },
