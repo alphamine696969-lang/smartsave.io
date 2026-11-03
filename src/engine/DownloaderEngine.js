@@ -51,6 +51,11 @@ export function mount(container, initialUrl, platformContext = null) {
     handler: null,         // platform handler { actions }
   };
 
+  // Declared before the initial render() — bindEvents() reads these, and
+  // `let` bindings are in the temporal dead zone until their declaration runs.
+  let _pasteTimer = null;
+  let _bound = false;
+
   // ── Initial render ─────────────────────────────────────
   render();
 
@@ -109,9 +114,6 @@ export function mount(container, initialUrl, platformContext = null) {
   // All registered listeners use stable function references, so re-calling
   // bindEvents() on every render does NOT stack up duplicates.
 
-  let _pasteTimer = null;
-
-  let _bound = false;
   function bindEvents() {
     if (_bound) return;
     _bound = true;

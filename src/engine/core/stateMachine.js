@@ -53,8 +53,9 @@ const TRANSITIONS = {
     [Events.RESET]:  States.IDLE,
   },
   [States.FETCHING]: {
-    [Events.FETCH_OK]:   States.READY,
-    [Events.FETCH_FAIL]: States.ERROR,
+    [Events.FETCH_START]: States.FETCHING, // already fetching — idempotent
+    [Events.FETCH_OK]:    States.READY,
+    [Events.FETCH_FAIL]:  States.ERROR,
   },
   [States.READY]: {
     [Events.DOWNLOAD_START]: States.DOWNLOADING,
