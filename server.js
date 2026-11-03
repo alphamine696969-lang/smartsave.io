@@ -263,12 +263,28 @@ app.post('/api/info', rateLimit, async (req, res) => {
 
     const isYT = isYouTubeUrl(url);
     // Try yt-dlp's default client first (full format list), then fallbacks.
-    const clients = isYT ? [null, 'tv_embedded', 'android', 'ios', 'web'] : [null];
+    // Keep this list short: when YouTube blocks a video every extra client adds
+    // its full timeout to the user's wait, and the UI just sits there.
+    const clients = isYT ? [null, 'tv_embedded', 'android'] : [null];
+
+    // Hard wall-clock budget for the whole request. Previously each of 5
+    // clients got 25s *plus* a redundant 25s "no extractor args" fallback, so
+    // a blocked video could hang for 150s (measured 103s in production).
+    const TOTAL_BUDGET_MS = 40_000;
+    const PER_ATTEMPT_MS = 18_000;
+    const deadline = Date.now() + TOTAL_BUDGET_MS;
 
     let info = null;
     let lastErr = null;
+    let budgetExhausted = false;
 
     for (const client of clients) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 1_000) {
+            budgetExhausted = true;
+            break;
+        }
+
         const args = [
             ...baseArgs,
             ...(client ? ['--extractor-args', `youtube:player_client=${client}`, '--user-agent', BROWSER_UA, '--geo-bypass'] : []),
@@ -277,7 +293,8 @@ app.post('/api/info', rateLimit, async (req, res) => {
 
         try {
             const { stdout } = await execFileAsync(YT_DLP_PATH, args, {
-                timeout: 25_000,
+                // Never let a single attempt overrun the overall budget.
+                timeout: Math.min(PER_ATTEMPT_MS, remaining),
                 maxBuffer: 20 * 1024 * 1024,
             });
             try {
@@ -298,26 +315,15 @@ app.post('/api/info', rateLimit, async (req, res) => {
         }
     }
 
-    // If all clients failed, try once more without extractor args
-    if (!info && isYT) {
-        try {
-            const { stdout } = await execFileAsync(YT_DLP_PATH, [...baseArgs, url], {
-                timeout: 25_000,
-                maxBuffer: 20 * 1024 * 1024,
-            });
-            try {
-                info = JSON.parse(stdout);
-            } catch { /* still bad */ }
-        } catch (err) {
-            lastErr = { originalError: err, stderr: (err.stderr || err.message || '').trim() };
-        }
-    }
+    if (!info && Date.now() >= deadline - 1_000) budgetExhausted = true;
 
     if (!info) {
         const stderr = (lastErr?.stderr || lastErr?.message || '').trim();
         const lastLine = stderr.split('\n').pop() || '';
-        if (lastErr?.killed || stderr.includes('timeout') || stderr.includes('ETIMEDOUT')) {
-            return res.status(408).json({ error: 'Request timed out. Please try again.' });
+        if (budgetExhausted || lastErr?.killed || stderr.includes('timeout') || stderr.includes('ETIMEDOUT')) {
+            return res.status(408).json({
+                error: 'YouTube is responding slowly right now. Please try again in a moment — most videos still work.',
+            });
         }
         if (stderr.includes('Sign in') || stderr.includes('login') || stderr.includes('bot') || stderr.includes('confirm')) {
             return res.status(403).json({ error: 'YouTube is temporarily blocking our server. Please try again in a few minutes.' });

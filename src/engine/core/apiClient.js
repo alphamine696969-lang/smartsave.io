@@ -7,10 +7,15 @@
 // Reads from Vite env var — same as the existing download.js
 const API_BASE = import.meta.env.VITE_API_URL || 'https://smartsave-io.onrender.com';
 
-/** Default timeout per request (ms) — keeps total wait under ~45s */
-const DEFAULT_TIMEOUT = 30_000;
+/**
+ * Default timeout per request (ms).
+ * The backend bounds /api/info to a 40s wall-clock budget, so this must sit
+ * comfortably above it — otherwise we abort a request that was about to
+ * succeed. Requests that exceed this are treated as failures, not retried.
+ */
+const DEFAULT_TIMEOUT = 50_000;
 
-/** Max retries on network-level failures (AbortError / TypeError) */
+/** Max retries on network-level failures (TypeError / "Failed to fetch") */
 const MAX_RETRIES = 1;
 
 /** Delay between retries (ms) — gives Render cold-start time to wake up */
@@ -37,12 +42,24 @@ async function fetchWithRetry(url, options, onRetry) {
       return response;
 
     } catch (err) {
-      const isRetryable =
-        err.name === 'AbortError' ||
+      // An AbortError means *we* hit DEFAULT_TIMEOUT — retrying would just
+      // double the user's wait. Only immediate network failures are retried
+      // (those are typically Render cold-start hiccups).
+      const isAbort = err.name === 'AbortError';
+      const isRetryable = !isAbort && (
         err.message.includes('Failed to fetch') ||
         err.message.includes('NetworkError') ||
         err.message.includes('Load failed') ||
-        err instanceof TypeError;
+        err instanceof TypeError
+      );
+
+      if (isAbort) {
+        const timeoutErr = new Error(
+          'The server took too long to respond. Please try again in a moment.'
+        );
+        timeoutErr.name = 'TimeoutError';
+        throw timeoutErr;
+      }
 
       if (attempt < MAX_RETRIES && isRetryable) {
         onRetry?.('Server is waking up, retrying…');

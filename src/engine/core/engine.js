@@ -102,10 +102,17 @@ export function useDownloader(initialUrl, onStateChange) {
     try {
       dispatch(Events.FETCH_START);
 
+      // Milestones keep creeping forward for the whole request — the old list
+      // stopped at 80% after 5s, so a slow (but successful) fetch looked like
+      // a permanent freeze at "Preparing download options…".
       const milestones = [
         { at: 1500,  message: 'Fetching media metadata…', percent: 45 },
         { at: 3000,  message: 'Analysing available formats…', percent: 65 },
         { at: 5000,  message: 'Preparing download options…', percent: 80 },
+        { at: 7_500, message: 'Still working — YouTube can be slow…', percent: 85 },
+        { at: 12_000, message: 'Almost there — finalising formats…', percent: 90 },
+        { at: 20_000, message: 'This is taking longer than usual…', percent: 95 },
+        { at: 30_000, message: 'Hang tight — the server is still responding…', percent: 97 },
       ];
 
       // Simulate progress milestones while the real API request is in flight
